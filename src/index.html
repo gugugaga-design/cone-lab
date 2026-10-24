@@ -1582,41 +1582,6 @@ function splitByConnectivity(pointsByKey, voxel){
       var r = find(m);
       (comps[r] = comps[r] || []).push(pts[m]);
     }
-    /* v33.15：**过滤掉"过小的碎片分量"**。
-       采样是离散的，稀疏区域会意外断开，形成只有几个点的小碎片；
-       它们在几何上并不独立，拆出来只会得到"没有真实采样"的伪块
-       （表现为 分区数 > 几何区域数）。
-       规则：点数 < 总点数 8% 且 < 40 点的分量，视为噪声，并回最大分量。 */
-    var rootKeys = Object.keys(comps);
-    if(rootKeys.length > 1){
-      var total = pts.length;
-      var maxKey = null, maxLen = -1;
-      rootKeys.forEach(function(rk){
-        if(comps[rk].length > maxLen){ maxLen = comps[rk].length; maxKey = rk; }
-      });
-      /* v33.15：只有"主分量足够大、碎片足够小"时才合并碎片。
-         如果**所有分量都很小**（说明这个 key 的采样本来就稀疏，
-         比如被面/相贯体切出来的窄条），拆分就没有意义 ——
-         拆出来的每块都只有几十个点，既不可靠也没法单独点选。
-         这种情况直接不拆分（整块保留）。 */
-      var MIN_MAIN = 200;      // 主分量至少这么多点，拆出来的才算"真区域"
-      if(maxLen < MIN_MAIN){
-        /* 全部都很小 → 合并成一个，不做拆分 */
-        var merged = [];
-        rootKeys.forEach(function(rk){ merged = merged.concat(comps[rk]); });
-        out.push({key:key, pts:merged});
-        return;
-      }
-      rootKeys.forEach(function(rk){
-        if(rk === maxKey) return;
-        var n = comps[rk].length;
-        /* 碎片：明显小于主分量，且点数不多 */
-        if(n < maxLen * 0.25 && n < 400){
-          comps[maxKey] = comps[maxKey].concat(comps[rk]);
-          delete comps[rk];
-        }
-      });
-    }
     /* 只有一个分量 → 原样返回（绝大多数情况，零开销） */
     var roots = Object.keys(comps);
     if(roots.length <= 1){ out.push({key:key, pts:pts}); return; }
