@@ -1,0 +1,30 @@
+# 依赖
+node_modules/
+package-lock.json
+
+# 构建产物 / 二进制
+*.apk
+*.jar
+*.zip
+*.class
+*.dex
+*.jks
+*.keystore
+out/
+apk3.zip
+
+# 测试临时文件
+tests/_from_apk.html
+tests/_tmp*.js
+tests/.fixture/
+tests/**/_from_apk.html
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# 日志
+*.log
