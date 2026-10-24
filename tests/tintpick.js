@@ -38,13 +38,21 @@ const A = app.run(`(function(){
   });
   return {rows:rows,
           opaqueVisible: rows.some(function(r){ return r.opaque && r.vis; }),
+          anyVisible: rows.some(function(r){ return r.vis; }),
           handleVisible: rows.some(function(r){ return r.hlKeep && r.vis; }),
           cells:cells.length};
 })()`);
 console.log("    " + JSON.stringify(A.rows));
 /* v33.6 起：相贯体实体**必须常显** —— 用户明确反馈"刚切点选模式、还没点，长方体就空了"。
    所以这里反过来断言：相贯体必须可见，否则就是回归。 */
-check("不透明相贯体实体在点选模式下保持可见（不能变空）", A.opaqueVisible === true,
+/* v33.23：点选模式下相贯体实体改为**半透明**（opacity 0.28、不写深度），
+   否则它会和分块网格同色不透明地互相遮挡，用户"隐藏了也看不出变化"。
+   断言改为：实体必须仍然**可见**（不能消失），但不再是完全不透明。 */
+/* 用户明确要求：**点选模式下贯体变实必须保持不透明**，
+   不许因为"怕遮挡"就擅自改成半透明。所以断言它必须是完全不透明的。 */
+check("相贯体实体在点选模式下仍然可见（不能变空）", A.anyVisible === true,
+      'anyVisible=' + A.anyVisible);
+check("点选模式下相贯体保持不透明（用户要求，不得改成半透明）", A.opaqueVisible === true,
       'opaqueVisible=' + A.opaqueVisible);
 check("相贯体轮廓（hlKeep）仍可见（能看见也能抓）", A.handleVisible === true);
 check("分块网格存在", A.cells >= 2, "cells=" + A.cells);
