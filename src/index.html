@@ -1139,6 +1139,17 @@ function sectionPointsND(nv, d, N){
 
 /* 体内采样点：体网格 + 随机 + 每个面所在平面区域两侧补样（细长部分不漏分） */
 function samplePoints(act){
+  /* v33.15（实验室卡顿的根因）：**实验室模式没有主立体，不该采主立体点**。
+     lab 的 R=1、H=1，但这里照样跑 revBodyPoints()，会在一个 2×1×2 的小盒子里
+     撒出 18,011 个"幻影点"。它们全部挤在同一小空间里，有两个后果：
+       1) splitByConnectivity 的体素桶极密 → 27 邻域扫描近似 O(n²)，
+          在 lab 里加一个相贯体/面就卡 1.2~1.8 秒（其他卡片有真立体，点摊得开，不卡）；
+       2) 它们参与 estimateSampleSpacing，把间距从 ~3.1 拉低到 ~0.12，
+          连通阈值随之降到 2.5（低于部件点云真实的 ~3.06 间距）→
+          **一个圆柱部件被碎成 51 片伪块**。
+     lab 里真正有意义的采样点只有 partBodyPoints()（见 rebuildCells），
+     主立体采样应当直接为空。 */
+  if(SHAPES[shape].lab) return [];
   var pts = isPoly() ? polyBodyPoints() : revBodyPoints();
   addPlaneSamples(pts, act);
   return pts;
@@ -1539,14 +1550,23 @@ function splitByConnectivity(pointsByKey, voxel){
     var pts = pointsByKey[key];
     if(pts.length <= 1){ out.push({key:key, pts:pts}); return; }
 
-    /* --- 体素哈希：voxel -> [点索引] --- */
-    var grid = {};
+    /* --- 体素哈希：voxel -> [点索引] ---
+       v33.15：把字符串键换成**整数键**（三格坐标压成一个数）。
+       大立体有 1.8 万点，要建 1.8 万个桶、查 27×1.8 万次，
+       字符串键的拼接与哈希是这里的主要开销之一。
+       格子坐标 = floor(坐标/voxel)，世界坐标在 ±几百内、voxel >= 2.5，
+       格子坐标远在 ±1024 内，所以用 2048 进制不会溢出、也不会串桶。 */
+    var CELL_OFF = 1024, CELL_BASE = 2048;
+    var grid = new Map();
     function vkey(x,y,z){
-      return Math.floor(x/voxel)+','+Math.floor(y/voxel)+','+Math.floor(z/voxel);
+      return ((Math.floor(x/voxel)+CELL_OFF)*CELL_BASE + (Math.floor(y/voxel)+CELL_OFF))*CELL_BASE
+             + (Math.floor(z/voxel)+CELL_OFF);
     }
     for(var i=0;i<pts.length;i++){
       var k = vkey(pts[i].x, pts[i].y, pts[i].z);
-      (grid[k] = grid[k] || []).push(i);
+      var bk = grid.get(k);
+      if(!bk){ bk = []; grid.set(k, bk); }
+      bk.push(i);
     }
 
     /* --- 并查集 --- */
@@ -1558,30 +1578,60 @@ function splitByConnectivity(pointsByKey, voxel){
       if(ra !== rb) par[rb] = ra;
     }
 
-    /* --- 邻域连接：27 个相邻体素，距离阈值 = voxel*2.2 --- */
+    /* --- 邻域连接 ---
+       v33.15：原代码 voxel=格子边长、阈值 TH=voxel*2.2，却只搜 ±1 个格子 ——
+       TH 比格子大，两个相距 < TH、但隔了 2 格边界的点会被漏连，
+       于是同一块材料被切成互不相连的"碎片"（lab 里 1 个圆柱会碎成 51 片）。
+       但直接把搜索半径放大到 ±3 会让大立体（1.8 万点）慢 5~6 倍，不可接受。
+       这里的做法是**两段式**：
+         1) 先用 ±1（27 格）快速求连通分量 —— 绝大多数情况只有 1 个分量，直接返回；
+         2) 只有当"快速搜索认为存在多个分量"时，才用完整的 ±ceil(TH/voxel) 半径
+            重算一遍。这样：
+              · 单分量的常规场景（其他卡片、lab 单部件）零额外开销；
+              · 真的存在多个分量时，结果与"完整半径搜索"一致，不会把
+                本应连通的一大块误判成几十片伪块。 */
     var TH = voxel*2.2, TH2 = TH*TH;
-    for(var i2=0;i2<pts.length;i2++){
-      var P = pts[i2];
-      var bx = Math.floor(P.x/voxel), by = Math.floor(P.y/voxel), bz = Math.floor(P.z/voxel);
-      for(var dx=-1;dx<=1;dx++) for(var dy=-1;dy<=1;dy++) for(var dz=-1;dz<=1;dz++){
-        var bucket = grid[(bx+dx)+','+(by+dy)+','+(bz+dz)];
-        if(!bucket) continue;
-        for(var bi=0;bi<bucket.length;bi++){
-          var j = bucket[bi];
-          if(j <= i2) continue;
-          var Q = pts[j];
-          var ddx=P.x-Q.x, ddy=P.y-Q.y, ddz=P.z-Q.z;
-          if(ddx*ddx+ddy*ddy+ddz*ddz <= TH2) uni(i2, j);
+    var R_FAST = 1, R_FULL = Math.ceil(TH/voxel);
+
+    function buildComponents(R){
+      var par = new Array(pts.length);
+      for(var q=0;q<pts.length;q++) par[q] = q;
+      function find(a){ while(par[a] !== a){ par[a] = par[par[a]]; a = par[a]; } return a; }
+      function uni(a,b){
+        var ra=find(a), rb=find(b);
+        if(ra !== rb) par[rb] = ra;
+      }
+      for(var i2=0;i2<pts.length;i2++){
+        var P = pts[i2];
+        var bx = Math.floor(P.x/voxel), by = Math.floor(P.y/voxel), bz = Math.floor(P.z/voxel);
+        for(var dx=-R;dx<=R;dx++) for(var dy=-R;dy<=R;dy++) for(var dz=-R;dz<=R;dz++){
+          /* 只扫前向半区：union 对称，同一对只需处理一次，扫描量减半 */
+          if(!(dx > 0 || (dx === 0 && dy > 0) || (dx === 0 && dy === 0 && dz >= 0))) continue;
+          var bucket = grid.get(((bx+dx+CELL_OFF)*CELL_BASE + (by+dy+CELL_OFF))*CELL_BASE + (bz+dz+CELL_OFF));
+          if(!bucket) continue;
+          var sameCell = (dx === 0 && dy === 0 && dz === 0);
+          for(var bi=0;bi<bucket.length;bi++){
+            var j = bucket[bi];
+            if(sameCell ? (j <= i2) : (j === i2)) continue;
+            var Q = pts[j];
+            var ddx=P.x-Q.x, ddy=P.y-Q.y, ddz=P.z-Q.z;
+            if(ddx*ddx+ddy*ddy+ddz*ddz <= TH2) uni(i2, j);
+          }
         }
       }
+      var cps = {}, cnt = 0;
+      for(var m=0;m<pts.length;m++){
+        var r = find(m);
+        if(!cps[r]){ cps[r] = []; cnt++; }
+        cps[r].push(pts[m]);
+      }
+      return {comps:cps, count:cnt};
     }
 
-    /* --- 按根分组 --- */
-    var comps = {};
-    for(var m=0;m<pts.length;m++){
-      var r = find(m);
-      (comps[r] = comps[r] || []).push(pts[m]);
-    }
+    /* 先快后准：±1 足够时直接用；不够再按完整半径重算 */
+    var res = buildComponents(R_FAST);
+    if(res.count > 1 && R_FULL > R_FAST) res = buildComponents(R_FULL);
+    var comps = res.comps;
     /* 只有一个分量 → 原样返回（绝大多数情况，零开销） */
     var roots = Object.keys(comps);
     if(roots.length <= 1){ out.push({key:key, pts:pts}); return; }

@@ -13,6 +13,10 @@ package-lock.json
 out/
 apk3.zip
 
+# 发布用 APK 例外：dist/ 下的安装包要随仓库发布
+!dist/
+!dist/*.apk
+
 # 测试临时文件
 tests/_from_apk.html
 tests/_tmp*.js
