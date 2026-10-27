@@ -1933,7 +1933,16 @@ function cellCaps(c, act){
       var plus = (pkCap.fm[o2.id] !== undefined)
         ? !!pkCap.fm[o2.id]
         : (c.key.charAt(j) === "1");
-      poly = clipHalfPlane(poly, plus?-a:a, plus?-b:b, plus?-cc:cc);
+      /* v33.17（"切完从上面能直接看到内部 / 封盖缺失"的根因）：
+         平面内一点 p = O + U·u + V·v，所以
+             o2.nv·p - o2.d = cc + a·u + b·v ，其中 cc = o2.nv·O - o2.d。
+         本块保留 n·p-d >= 0 一侧（plus=true）→ 要 a·u+b·v >= -cc ，
+         交给 clipHalfPlane（保留 a·u+b·v <= c）就是 (-a, -b, +cc)；
+         plus=false 时保留另一侧 → a·u+b·v <= -cc ，即 (a, b, -cc)。
+         旧代码把**常数项的符号**写反了（plus? -cc : cc），法向项是对的 ——
+         于是几乎每个面都把封盖裁成空多边形（实测 19 块里只有 3 块生成得出封盖），
+         隐藏一块之后切口没有盖子 → 从上面直接看穿到内壁 = 用户说的"中空"。 */
+      poly = clipHalfPlane(poly, plus?-a:a, plus?-b:b, plus?cc:-cc);
     }
     if(poly.length < 3) continue;
     var pos = [];
@@ -2001,9 +2010,11 @@ function buildCellVis(){
      只关掉"部件本体网格 + 边线"（带 userData.pi 的那些）。 */
   var anyOwnCell = cells.some(function(c){ return c.ownerPart != null; });
   var hideShells = anyOwnCell || mainUsable;
+  /* v33.17：部件的**边线**（userData.piEdge）也一起隐藏。
+     边线是白色实线，隐藏部件之后若还留在原地勾出轮廓，用户同样会觉得"点了没消失"。 */
   if(partGroup){
     partGroup.children.forEach(function(ch){
-      if(ch.userData && ch.userData.pi != null){
+      if(ch.userData && (ch.userData.pi != null || ch.userData.piEdge != null)){
         ch.visible = !hideShells;
       }
     });
@@ -2837,6 +2848,10 @@ function buildCylVis(skipCurves){
         /* v33.5：点选模式里实体本体不画，这两圈端面轮廓就是相贯体唯一可见的"把手"，
            必须保留（否则用户既看不见相贯体、也抓不到它）。 */
         ring.userData.hlKeep = true;
+        /* v33.17：但"这块材料已经被用户隐藏"时，本体不画了，两圈轮廓也不该留在半空。
+           否则点掉伸出段之后，屏幕上还飘着两个橙色圆环 —— 用户会说"点了还在"。
+           隐藏后仍可点回来：tapPick 里对相贯体实体网格的求交不依赖 visible（见该处注释）。 */
+        if(bodyHidden) ring.visible = false;
         g.add(ring);
         if(sgn < 0) main = ring;
       });
@@ -2895,9 +2910,21 @@ function buildCylVis(skipCurves){
       });
     }
     scene.add(g);
+    /* v33.17：这块"相贯体材料"已被隐藏时，把它的装饰（端面圆环/棱线）也一起收掉，
+       并且**在 setCylHighlightVisible 之后**再压一次 —— 那个函数会按 hlKeep
+       把圆环重新点亮（打孔形态需要它当把手），会把这里的隐藏覆盖掉。 */
+    if(bodyHidden){
+      g.traverse(function(ch){ if(ch.userData && ch.userData.hlDecor) ch.visible = false; });
+    }
     cylVis.push({g:g, ring:main, curves:curves.length, body:true});
   });
   setCylHighlightVisible(cylDecorVisible);   // 重建后保持当前开关状态
+  /* 再压一次：隐藏材料的装饰不能因为上面这行又亮起来 */
+  cyls.forEach(function(c, i){
+    if(!(bodyTint && mode === "pick" && cylRegionHidden(c))) return;
+    var v = cylVis[i]; if(!v || !v.g) return;
+    v.g.traverse(function(ch){ if(ch.userData && ch.userData.hlDecor) ch.visible = false; });
+  });
 }
 
 /* ============ 模型拼装（第三块功能：空白页上自由摆放立体） ============
@@ -3380,6 +3407,15 @@ function disposePartGeoms(g){
 function buildParts(){
   if(partGroup){ scene.remove(partGroup); disposePartGeoms(partGroup); }
   partGroup = new THREE.Group(); scene.add(partGroup);
+  /* v33.17（用户反馈"点选保留部分点了突出来的圆柱，它不消失"的根因）：
+     pick 模式下分块网格（cellGroup）才是主体，部件外壳必须让位 ——
+     buildCellVis 里已经算好了"该不该隐藏外壳"，但它只在 refresh 时跑一次；
+     而 buildParts() 每次重建都会把 mesh.visible 恢复成默认 true，
+     于是任何"改模型"的动作（拖动、改尺寸、加/删部件、切拼装变实…）之后
+     外壳又盖回分块网格上面。外壳是 opacity 0.55 的半透明青蓝，
+     分块网格明明已经隐藏了，屏幕上那块圆柱看起来**一点没变** —— 这就是问题 2。
+     这里让 buildParts 复用同一份判定，保证重建后仍然隐藏。 */
+  var shellsHidden = pickShellsHidden();
   parts.forEach(function(pr, i){
     var g = partGeoOf(pr);
     // 点选模式下被隐藏的部件 → 画成半透明幽灵（仍可点中"点回来"）；否则按 拼装变实 状态取材质
@@ -3387,10 +3423,15 @@ function buildParts(){
     var mesh = new THREE.Mesh(g, mats[0]);
     mesh.applyMatrix4(partMatrix(pr));
     mesh.userData.pi = i;
+    if(shellsHidden) mesh.visible = false;      // v33.17：pick 模式下外壳让位给分块网格
     partGroup.add(mesh);
     var eg = new THREE.LineSegments(new THREE.EdgesGeometry(g, 25), mats[1]);
     eg.applyMatrix4(partMatrix(pr));
     eg.renderOrder = 5;
+    /* v33.17：边线用**单独的** piEdge 归属该部件（不能复用 userData.pi ——
+       那是"部件本体网格"的标记，测试与拾取都靠它区分 Mesh 和线）。 */
+    eg.userData.piEdge = i;
+    if(shellsHidden) eg.visible = false;
     partGroup.add(eg);
     /* 变实后补一圈穿透轮廓：部件埋在立体里也看得出"已经是实体"（见 partXrayEdgeMaterial 注释） */
     if(partTint && !(mode === "pick" && pr.hidden)){
@@ -3402,6 +3443,29 @@ function buildParts(){
     }
   });
   buildPartCurves();
+  /* v33.17（用户反馈"移动拼装模型后，移动后的 3D 模型仍存在 / 变成贯体变实的颜色 /
+     很多噪点 / 无法删除"的根因）：
+     部件的**位置/尺寸/方向**都参与分块（cell 的裁剪平面与 partSpec 都按 parts 算），
+     可 buildParts() 只重建了部件外壳，**没有让分块跟着重算**。
+     于是拖动部件之后：分块网格用的是"新位置"的部件几何（partGeoOf + partMatrix），
+     却配着"旧位置"的裁剪平面与部件体积规格 —— 两者错位，
+     屏幕上就留下一块橙色的（= 分块正面 0xf08c42，正是用户说的"贯体变实的颜色"）
+     位置错误、边缘全是噪点、删也删不掉的残影。
+     cylDrag 分支早就有 `cellsDirty = true`，partDrag / 面板输入 / 增删部件都没有。
+     这里统一：只要在点选模式重建部件，就标记分块需要重算。
+     （refresh() 里 buildParts 在 rebuildCells 之前，末尾的 cellsDirty=false 会清掉这次标记，
+       所以走 refresh 的路径不会重复计算。） */
+  if(mode === "pick") cellsDirty = true;
+}
+/* pick 模式下"部件外壳是否该隐藏"（buildCellVis 与 buildParts 共用同一份判定）：
+   只要主立体可用、或已有分块落在部件内部，分块网格就能代表实体 → 外壳让位。
+   分块为空时把外壳显示回来，避免屏幕空着。 */
+function pickShellsHidden(){
+  if(mode !== "pick") return false;
+  var anyOwnCell = cells.some(function(c){ return c.ownerPart != null; });
+  var mainUsable = !!(geo && geo.attributes && geo.attributes.position &&
+                      geo.attributes.position.count > 0);
+  return anyOwnCell || mainUsable;
 }
 /* 点在部件内部（用于部件之间的相贯判定 / 分块 / 拼装体一起做"实体"显示） */
 /* 局部坐标版：q 已经是部件局部坐标。相贯线采样一次要判上万次，
@@ -3949,6 +4013,10 @@ function endDrag(){
     controls.enabled = true;
     renderPartList();
     buildParts();
+    /* v33.17：buildParts() 已把 cellsDirty 置位，但渲染循环要等下一帧才重建；
+       这里立刻重建，保证"松手"的同一帧里分块就与新位置对齐，
+       不会出现"拖动中残影 / 松手后才跳一下"。 */
+    if(mode === "pick"){ rebuildCells(); buildCellVis(); cellsDirty = false; }
     commitUndo();
     return;
   }
@@ -4162,6 +4230,56 @@ function tapPick(e){
         }
       }
       if(key !== null) cands.push({kind:"cell", dist:ch[0].distance, key:key});
+    }
+  }
+  /* v33.17（用户反馈"点了突出来的圆柱不消失"的另一半根因）：
+     相贯体（贯穿圆柱/长方体）伸出主立体之外的那一截，**根本不在任何分块网格里** ——
+     分块几何用的是主立体 geo，伸出段在主立体外，被裁得干干净净（实测 cellGroupHits=0）。
+     于是点它什么候选都没有 → tapPick 直接 return → 用户看到的就是"点了没反应"。
+     这里把相贯体自己的实体网格也收进候选：它本来就是模型的一部分，
+     点它应当把"这一整块相贯体材料"隐藏掉（隐藏后 buildCylVis 的 bodyHidden 会整块不画）。
+     只在 pick 模式、且该相贯体是"实体"（!c.hole）时参与；打孔的圆环已有 hlKeep 兜底。 */
+  if(cyls.length){
+    var cvs = activeCyls();
+    var chits = [];
+    for(var vi=0; vi<cylVis.length; vi++){
+      var vv = cylVis[vi];
+      if(!vv || !vv.g) continue;
+      var bodies = [];
+      vv.g.children.forEach(function(ch){
+        /* 只取"实体本体"：圆柱/长方体网格。圆环(torus)、棱线、轴线、相贯线都不算，
+           它们要么是装饰、要么属于打孔形态（hole），不参与"隐藏这一块材料"。
+           注意**不看 visible**：这块材料被隐藏后本体不画（bodyHidden），
+           但用户必须还能点同一位置把它恢复回来 —— 否则就是"藏了删不掉"。 */
+        if(ch.isMesh && ch.geometry &&
+           (ch.geometry.type === "CylinderGeometry" || ch.geometry.type === "BoxGeometry")){
+          bodies.push(ch);
+        }
+      });
+      if(!bodies.length) continue;
+      var vh = raycaster.intersectObjects(bodies, false);
+      if(vh.length) chits.push({ci:vi, dist:vh[0].distance, point:vh[0].point.clone()});
+    }
+    if(chits.length){
+      chits.sort(function(a,b){ return a.dist - b.dist; });
+      var chBest = chits[0], cc2 = cvs[chBest.ci];
+      if(cc2 && !cc2.hole){
+        /* 点中的是哪一类区域？用 cellKeyAt 求出该点的符号位，
+           再把"同属这一侧材料"的分块一起切掉 —— 这样点伸出段就等于点它所属的那一块。
+           注意：命中点**正好落在相贯体表面上**，cellKeyAt 遇到"恰在表面"会返回 null
+           （cylCodeAt 里 mg 在 ±0.05 内即视为表面），所以先沿射线往里挪一点再取。 */
+        var rd2 = raycaster.ray.direction;
+        var kk = null;
+        var probeOff = [0.15, 0.4, 1.0, 2.2, 4.5];
+        for(var po=0; po<probeOff.length && kk===null; po++){
+          kk = cellKeyAt(chBest.point.clone().addScaledVector(rd2, probeOff[po]),
+                         activeFaceData(), cvs, activeParts());
+        }
+        if(kk !== null){
+          var kAct = resolveToActualCellKey(kk, chBest.point);
+          cands.push({kind:"cell", dist:chBest.dist, key:kAct});
+        }
+      }
     }
   }
   if(!cands.length) return;
@@ -4388,6 +4506,11 @@ function attachDrag(){
         pr3.y = Math.round((partDrag.o0.y + dvP.y)*2)/2;
         pr3.z = Math.round((partDrag.o0.z + dvP.z)*2)/2;
         partDrag.moved = true;
+        /* v33.17：点选模式下分块网格才是主体，部件一动就必须跟着重建，
+           否则分块还停在旧位置，拖动过程中就是一块错位的橙色残影。 */
+        if(mode === "pick"){
+          try{ rebuildCells(); buildCellVis(); cellsDirty = false; }catch(_){ }
+        }
         try{ buildParts(); }catch(_){ }
       }
       return;
