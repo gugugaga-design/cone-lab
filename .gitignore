@@ -17,6 +17,16 @@ apk3.zip
 !dist/
 !dist/*.apk
 
+# 交接文档：只保留在本地，不入库
+# 原因：里面含本机绝对路径、内部签名口令约定、代理/证书配置、用户凭据处理方式等，
+#       属于开发过程记录，不适合放进公开仓库。任何位置的交接文档都忽略。
+交接文档-*.md
+交接-*.md
+HANDOVER-*.md
+HANDOVER_*.md
+docs/HANDOVER-*
+docs/HANDOVER_*
+
 # 测试临时文件
 tests/_from_apk.html
 tests/_tmp*.js
