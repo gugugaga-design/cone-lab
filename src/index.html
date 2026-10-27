@@ -1911,6 +1911,14 @@ function partBodyPoints(pr){
    着色器丢弃（keep=+1），所以打过孔的地方不会被盖住。 */
 function cellCaps(c, act){
   var out = [], nP = act.length;
+  /* v33.16（用户反馈"加面后某个地方有莫名阴影"的根因之一）：
+     旧代码用 `c.key.charAt(j) === "1"` 取第 j 个面的符号位 —— 那是 v22 以前
+     key 还是纯 "101" 字符串时的写法。v22 起 key 变成 "f12:1,f7:0|c3:1|p6:0"，
+     第 j 个字符拿到的是 'f' / ':' / ',' 之类，**永远不等于 "1"** →
+     所有 plus 都被判成 false → 封盖一律按"另一侧"裁剪，
+     于是封盖画到块的**反侧**去，屏幕上就是一块深色的莫名阴影。
+     现在统一走 parseCellKey()（它已经会剥掉 "#n" 连通分量后缀）。 */
+  var pkCap = parseCellKey(c.key);
   for(var m=0; m<nP; m++){
     var o = act[m], sp = sectionPoly2D(o.nv, o.d, 96);
     if(!sp.poly || sp.poly.length < 3) continue;
@@ -1919,7 +1927,12 @@ function cellCaps(c, act){
       if(j === m) continue;
       var o2 = act[j];
       var a = o2.nv.dot(B.U), b = o2.nv.dot(B.V), cc = o2.nv.dot(B.O) - o2.d;
-      var plus = c.key.charAt(j) === "1";
+      /* 兼容两种 key：
+         · 真正的分块 key（"f12:1,f7:0|..."）→ 按面 id 查符号位；
+         · buildInterCaps 传进来的"全保留"伪 key（"111…"）→ 退回按下标取字符。 */
+      var plus = (pkCap.fm[o2.id] !== undefined)
+        ? !!pkCap.fm[o2.id]
+        : (c.key.charAt(j) === "1");
       poly = clipHalfPlane(poly, plus?-a:a, plus?-b:b, plus?-cc:cc);
     }
     if(poly.length < 3) continue;
@@ -1930,6 +1943,20 @@ function cellCaps(c, act){
                  B.O.y + B.U.y*q[0] + B.V.y*q[1],
                  B.O.z + B.U.z*q[0] + B.V.z*q[1]);
       });
+    }
+    /* v33.16（用户反馈"加面后某个地方有莫名阴影"的根因之二）：
+       封盖多边形与分块自身的背面网格在剖面处**几乎完全共面**，
+       两者深度值在浮点精度下交替胜出 → 逐像素 z-fighting，
+       屏幕上就是一大片橙/深色噪点（看起来像"莫名的阴影"）。
+       把封盖沿法向朝"被切掉的那一侧"平移 0.08mm：
+       既仍紧贴剖面（肉眼看不出位移），又与网格错开深度，噪点消失。
+       方向 sgn：plus=true 时该块保留 n·p>=d 一侧，被切掉的是 -n 侧 → sgn=+1。 */
+    var sgnCap = (pkCap.fm[o.id] !== undefined)
+      ? (pkCap.fm[o.id] ? 1 : -1)
+      : (c.key.charAt(m) === "1" ? 1 : -1);
+    var offCap = o.nv.clone().multiplyScalar(sgnCap*0.08);
+    for(var pi=0; pi<pos.length; pi+=3){
+      pos[pi] += offCap.x; pos[pi+1] += offCap.y; pos[pi+2] += offCap.z;
     }
     var g = new THREE.BufferGeometry();
     g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
@@ -2010,24 +2037,31 @@ function buildCellVis(){
       m.userData.front = front;
       setCylSpecs(m.material, c.cyls || []);
       setPartSpecs(m.material, c.parts || []);    // v33：部件体积参与裁剪
-      /* v33.9（用户"点锥顶没反应"的最终原因）：
-         分块网格和"贯体变实"的相贯体是**同一个橙色 0xf08c42**，
-         而且相贯体是**不透明实体**（transparent:false / depthWrite:true），
-         它把分块网格整块盖住 —— 用户点锥顶，分块确实被隐藏了，
-         但屏幕上那层橙块还在，于是"看起来毫无反应"。
-         解决办法：让分块网格**永远画在最上层**（关深度测试 + 高 renderOrder）。
-         这样点选模式下用户看到的就是分块网格本身，隐藏一块立刻可见。 */
-      m.material.depthTest = false;
+      /* v33.16（用户反馈"模型有些中空 / 实体的地方没显现"的根因）：
+         v33.9 为了解决"贯体变实的相贯体挡住分块网格"，把分块网格和封盖都设成
+         **depthTest=false**，靠 renderOrder 硬压在最上层。但关掉深度测试后，
+         所有分块的**背面（深色 0x4b2a14）和远处分块会盖住近处分块** ——
+         同一像素最后画的那块赢，跟真实前后关系无关。屏幕上表现为：
+           · 本来实心的地方透出内壁 / 深色块（"中空"）；
+           · 分块交界处出现一条条莫名的暗色带（"阴影"）。
+         现在恢复正常的深度测试。点选模式下相贯体实体不再压住分块（见 buildCylVis
+         的 bodyHidden），所以不再需要这个 hack。 */
+      m.material.depthTest = true;
       m.renderOrder = 1010 + (front ? 1 : 0);
       cellGroup.add(m);
     };
     mk(true); mk(false);
     if(c.sel && actC.length){
       cellCaps(c, actC).forEach(function(g){
-        var capMat = new THREE.MeshLambertMaterial({color:0xdd7a34, side:THREE.DoubleSide});
+        /* v33.16：封盖必须带上**本块自己的裁剪平面**。
+           旧代码只给了 cyl/part 的着色器规格，没有 clippingPlanes ——
+           于是封盖是"整个截面"的一大片，直接盖到别的分块上，
+           叠出来就是那块"莫名的阴影"。 */
+        var capMat = new THREE.MeshLambertMaterial({color:0xdd7a34, side:THREE.DoubleSide,
+          clippingPlanes:c.planes, clipIntersection:false});
         setCylSpecs(capMat, capSpecs);       // 孔洞处丢弃，别把孔盖死
         setPartSpecs(capMat, capPartSpecs);  // 盖子上也按部件裁
-        capMat.depthTest = false;            // v33.9：与分块网格一起画在最上层
+        capMat.depthTest = true;
         var cm = new THREE.Mesh(g, capMat);
         cm.renderOrder = 1012;
         cm.userData.ck = c.key; cm.userData.cap = true;
