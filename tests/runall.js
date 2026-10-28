@@ -9,18 +9,20 @@ const path = require("path");
 const vm = require("vm");
 
 const ROOT = path.resolve(__dirname, "..");
+/* 仓库目录结构：测试都在 tests/ 下（tests/test3/ 是独立 harness）。
+   早期版本这里写的是工作区的 test2/ 前缀，仓库里没有该目录 → 直接 ENOENT。 */
 const SUITES = [
-  ["test2/accept.js",  "四项需求验收"],
-  ["test2/edge.js",    "边界/退化/性能"],
-  ["test2/regions.js", "分区数=几何分区数"],
-  ["test2/curves.js",  "相贯线几何精度"],
-  ["test2/cellgeo.js", "分块裁剪互斥完备"],
-  ["test2/cylpick.js", "相贯体裁切点选"],
-  ["test2/tintpick.js","贯体变实+点选遮挡"],
-  ["test2/eventflow.js","真实DOM事件流点选"],
-  ["test2/pickfix.js", "点选中空/伸出段/移动残留"],
-  ["test/verify.js",   "独立 harness #1"],
-  ["test3/regions.js", "独立 harness #2"],
+  ["tests/accept.js",   "四项需求验收"],
+  ["tests/edge.js",     "边界/退化/性能"],
+  ["tests/regions.js",  "分区数=几何分区数"],
+  ["tests/curves.js",   "相贯线几何精度"],
+  ["tests/cellgeo.js",  "分块裁剪互斥完备"],
+  ["tests/cylpick.js",  "相贯体裁切点选"],
+  ["tests/tintpick.js", "贯体变实+点选遮挡"],
+  ["tests/eventflow.js","真实DOM事件流点选"],
+  ["tests/pickfix.js",  "点选中空/伸出段/移动残留"],
+  ["tests/verify.js",   "独立 harness #1"],
+  ["tests/test3/regions.js", "独立 harness #2"],
 ];
 
 let fail = 0;

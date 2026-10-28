@@ -385,6 +385,187 @@ const perf = app.run(`(function(){
 })()`);
 check("满负载 refresh < 5000ms", perf.ms < 5000, perf.ms + "ms, cells=" + perf.cells);
 
+/* ============================================================
+   v33.19 回归：用户本轮反馈的三条
+     ① 模型拼装里的 3D 模型上"好多条道"（表面一条条深色缝）
+     ② 拖动拼装模型时"有时候会卡"
+     ③ 加出来的 3D 模型"自动是橙色"，点「拼装变实」也不变青
+   ============================================================ */
+
+/* ---------- 11. 假分量必须合并（"好多条道"的根因） ---------- */
+section("11. 单个实心部件不能被采样层切成碎片（表面条纹的根因）");
+/* 圆台/球这类"分层采样"的部件，径向间距远大于层间距，
+   旧代码按最近邻中位数定阈值 → 同一个实心件被切成 20 片，
+   每片各带一套裁剪平面，交界处互相穿插 = 一条条深色缝。 */
+const frag = app.run(`(function(){
+  var out = [];
+  [['frustum', function(p){ p.r=22; p.rt=12; p.h=34; }],
+   ['sphere',  function(p){ p.r=20; }],
+   ['cyl',     function(p){ p.r=16; p.h=44; }],
+   ['cone',    function(p){ p.r=18; p.h=40; }]].forEach(function(it){
+    applyShape('lab');
+    parts.length = 0; cyls.length = 0; faces.length = 0; pickSel = {};
+    addPart(it[0]);
+    it[1](parts[0]);
+    buildParts();
+    mode = 'pick'; refresh();
+    out.push({k:it[0], cells:cells.length, keys:cells.map(function(c){ return c.key; })});
+  });
+  return out;
+})()`);
+console.log("    " + JSON.stringify(frag));
+frag.forEach(function(r){
+  check("单个 " + r.k + " 部件在点选模式下只分成 1 块（不被采样层切碎）",
+        r.cells === 1, r.k + " cells=" + r.cells + " keys=" + JSON.stringify(r.keys));
+});
+
+/* 反证：真实断开的区域仍必须拆开（锥顶尖 / 锥底被贯穿圆柱打穿） */
+const stillSplit = app.run(`(function(){
+  applyShape('pyr3');
+  parts.length = 0; cyls.length = 0; faces.length = 0; pickSel = {};
+  addCyl('frontal');
+  cyls[0].r = 13; cyls[0].on = true;
+  buildCylVis();
+  mode = 'pick'; refresh();
+  return {cells:cells.length, keys:cells.map(function(c){ return c.key; })};
+})()`);
+console.log("    " + JSON.stringify(stillSplit));
+check("真实断开（锥顶尖与锥底被圆柱打穿）仍拆成多块 —— 合并没有过度",
+      stillSplit.cells >= 3, "cells=" + stillSplit.cells);
+
+/* ---------- 12. 分块网格不能对自己所属部件再做一次"内部判定" ---------- */
+section("12. 分块网格跳过自身部件的 partSpec（顶面针孔的根因）");
+const selfSpec = app.run(`(function(){
+  applyShape('lab');
+  parts.length = 0; cyls.length = 0; faces.length = 0; pickSel = {};
+  addPart('frustum');
+  (function(p){ p.r=22; p.rt=12; p.h=34; })(parts[0]);
+  buildParts();
+  mode = 'pick'; refresh();
+  var bad = [], checked = 0;
+  cellGroup.children.forEach(function(m){
+    if(m.userData.cap) return;
+    checked++;
+    var u = m.material.userData && m.material.userData.cylU;
+    if(!u) return;
+    /* 看这个材质的 uPartK 槽里还有没有"保留内部"(keep<0) 的项 —— 那就是自身部件 */
+    for(var i=0;i<4;i++){
+      if(u.uPartK.value[i].x < -0.5) bad.push({ck:m.userData.ck, slot:i, keep:u.uPartK.value[i].x});
+    }
+  });
+  return {checked:checked, selfSpecCount:bad.length, bad:bad.slice(0,4)};
+})()`);
+console.log("    " + JSON.stringify(selfSpec));
+check("分块材质里没有\"保留自身部件内部\"的 spec（顶面不再打针孔）",
+      selfSpec.selfSpecCount === 0, "违规 " + selfSpec.selfSpecCount + " 项");
+
+/* ---------- 13. 拼装变实：点选模式下的分块必须跟着变青 ---------- */
+section("13. 「拼装变实」在点选模式下必须真的变色（不是只改隐藏的外壳）");
+const tintPick = app.run(`(function(){
+  applyShape('lab');
+  parts.length = 0; cyls.length = 0; faces.length = 0; pickSel = {};
+  addPart('frustum');
+  (function(p){ p.r=22; p.rt=12; p.h=34; })(parts[0]);
+  buildParts();
+  mode = 'pick'; refresh();
+  var before = [];
+  cellGroup.children.forEach(function(m){
+    if(!m.userData.cap && m.userData.front) before.push(m.material.color.getHexString());
+  });
+  partTint = true;
+  buildParts(); rebuildCells(); buildCellVis();      // 按钮处理函数做的事
+  var after = [];
+  cellGroup.children.forEach(function(m){
+    if(!m.userData.cap && m.userData.front) after.push(m.material.color.getHexString());
+  });
+  var shell = partGroup.children.filter(function(c){ return c.userData.pi != null; })[0];
+  var shellCol = shell ? shell.material.color.getHexString() : null;
+  partTint = false; buildParts(); rebuildCells(); buildCellVis();
+  var back = [];
+  cellGroup.children.forEach(function(m){
+    if(!m.userData.cap && m.userData.front) back.push(m.material.color.getHexString());
+  });
+  return {before:before, after:after, shell:shellCol, back:back};
+})()`);
+console.log("    " + JSON.stringify(tintPick));
+check("新加的拼装部件不是橙色（默认半透明青蓝 #8fd8ff）",
+      tintPick.before.length > 0 && tintPick.before.every(function(c){ return c === "8fd8ff"; }),
+      JSON.stringify(tintPick.before));
+check("「拼装变实」后分块变成青色 #12d6c8",
+      tintPick.after.length > 0 && tintPick.after.every(function(c){ return c === "12d6c8"; }),
+      JSON.stringify(tintPick.after));
+check("分块颜色与部件外壳颜色一致（同一个变实状态）",
+      tintPick.shell === "12d6c8", "shell=" + tintPick.shell);
+check("再点一次能还原成默认青蓝",
+      tintPick.back.every(function(c){ return c === "8fd8ff"; }), JSON.stringify(tintPick.back));
+
+/* 主立体的分块必须仍然是模型橙（不能把"被切开的立体"也染成蓝） */
+const solidStillOrange = app.run(`(function(){
+  applyShape('pyr3');
+  parts.length = 0; cyls.length = 0; faces.length = 0; pickSel = {};
+  faces.push({type:'horiz', ang:0, x:0, y:6, z:0, on:true, flip:false});
+  mode = 'pick'; refresh();
+  var cols = [];
+  cellGroup.children.forEach(function(m){
+    if(!m.userData.cap && m.userData.front) cols.push(m.material.color.getHexString());
+  });
+  return cols;
+})()`);
+console.log("    " + JSON.stringify(solidStillOrange));
+check("主立体分块仍是模型橙 #f08c42（部件配色不污染主立体）",
+      solidStillOrange.length > 0 && solidStillOrange.every(function(c){ return c === "f08c42"; }),
+      JSON.stringify(solidStillOrange));
+
+/* ---------- 14. 拖动：一次 pointermove 只重建一次分块 ---------- */
+section("14. 拖动跟手：一次 pointermove 不能触发两次 rebuildCells");
+const dragCost = app.run(`(function(){
+  applyShape('lab');
+  parts.length = 0; cyls.length = 0; faces.length = 0; pickSel = {};
+  addPart('frustum');
+  (function(p){ p.r=22; p.rt=12; p.h=34; })(parts[0]);
+  buildParts();
+  mode = 'pick'; refresh();
+  /* 数一次"pointermove 的 partDrag 分支 + 紧随其后的渲染帧"总共重建几次 */
+  var n = 0, orig = rebuildCells;
+  rebuildCells = function(){ n++; return orig.apply(null, arguments); };
+  parts[0].x = 6;
+  try{ buildParts(); }catch(_){}
+  if(mode === 'pick'){ try{ rebuildCells(); buildCellVis(); cellsDirty = false; }catch(_){} }
+  var inMove = n, dirtyAfterMove = cellsDirty;
+  /* 渲染循环那一帧 */
+  if(cellsDirty && mode === 'pick'){ rebuildCells(); buildCellVis(); }
+  cellsDirty = false;
+  var total = n;
+  rebuildCells = orig;
+  return {inMove:inMove, total:total, dirtyAfterMove:dirtyAfterMove};
+})()`);
+console.log("    " + JSON.stringify(dragCost));
+check("一次 pointermove 只重建 1 次分块（旧代码是 2 次）",
+      dragCost.inMove === 1, "rebuilds=" + dragCost.inMove);
+check("pointermove 结束后 cellsDirty 已清（渲染帧不会重复重建）",
+      dragCost.dirtyAfterMove === false, "cellsDirty=" + dragCost.dirtyAfterMove);
+check("整轮（move + 渲染帧）总共只重建 1 次",
+      dragCost.total === 1, "total=" + dragCost.total);
+
+/* estimateSampleSpacing 是拖动路径上最贵的一步，必须够快 */
+const spacingPerf = app.run(`(function(){
+  applyShape('lab');
+  parts.length = 0; cyls.length = 0; faces.length = 0; pickSel = {};
+  addPart('frustum');
+  (function(p){ p.r=22; p.rt=12; p.h=34; })(parts[0]);
+  buildParts();
+  mode = 'pick'; refresh();
+  var pts = [];
+  cells.forEach(function(c){ if(c.pts) pts = pts.concat(c.pts); });
+  if(pts.length < 50) pts = partBodyPoints(parts[0]);
+  var t0 = performance.now();
+  for(var i=0;i<20;i++) estimateSampleSpacing(pts);
+  return {ms: +((performance.now()-t0)/20).toFixed(2), n:pts.length};
+})()`);
+console.log("    " + JSON.stringify(spacingPerf));
+check("estimateSampleSpacing 单次 < 5ms（拖动每帧都会调）",
+      spacingPerf.ms < 5, spacingPerf.ms + "ms / " + spacingPerf.n + " 点");
+
 console.log("\n=========================================");
 console.log("  PASS " + pass + "   FAIL " + fail);
 console.log("=========================================");

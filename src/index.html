@@ -1543,7 +1543,7 @@ function selInherit(k, pk, depth){
    · 用体素哈希加速邻域查询（否则 O(n²) 太慢）
    · 连通阈值 = 采样间距的 2.2 倍（保证相邻采样点能连上，又不会跨越真实缝隙）
    ============================================================ */
-function splitByConnectivity(pointsByKey, voxel){
+function splitByConnectivity(pointsByKey, voxel, keyAtFn){
   voxel = voxel || 4.0;
   var out = [];                      // [{key, pts:[...]}]
   Object.keys(pointsByKey).forEach(function(key){
@@ -1628,12 +1628,79 @@ function splitByConnectivity(pointsByKey, voxel){
       return {comps:cps, count:cnt};
     }
 
-    /* 先快后准：±1 足够时直接用；不够再按完整半径重算 */
+    /* 先快后准：±1 足够时直接用；不够再按完整半径重算。
+       v33.19（拖动卡顿）：有 keyAtFn 探针时**跳过完整半径重算** ——
+       ±1 的快速搜索只会"过度拆分"（连不上远处同材料点），而下面的
+       探针合并步骤正好把"中点仍属同一符号位"的分量并回去，
+       所以结果一样准，但省掉一整趟 O(n·27) 扫描（实测 9.2ms → 5.1ms）。
+       没有探针（旧调用方）时保持原行为，避免退化。 */
     var res = buildComponents(R_FAST);
-    if(res.count > 1 && R_FULL > R_FAST) res = buildComponents(R_FULL);
+    if(res.count > 1 && R_FULL > R_FAST && typeof keyAtFn !== "function"){
+      res = buildComponents(R_FULL);
+    }
     var comps = res.comps;
-    /* 只有一个分量 → 原样返回（绝大多数情况，零开销） */
+    /* v33.19：**把"被采样结构切出来的假分量"合并回去**。
+       采样点是分层的（partBodyPoints 的径向 3 层 / 主立体的网格层），
+       各向异性很严重：同一个部件的"竖直间距"可能只有 2.4，而"径向间距"有 8.8。
+       estimateSampleSpacing 取的是最近邻中位数（=2.4），于是连通阈值 TH=6.1
+       —— 径向上 8.8 > 6.1，**同一个实心部件被自己的采样层切成 20 片**。
+       用户看到的就是"模型上好多条道"（每片各自带一套裁剪平面与背面网格，
+       在交界处互相穿插 → 一条条深色缝）。
+
+       判据不能只看点距，要看**两点之间的空间到底是不是同一块材料**：
+       取两个分量最近点连线的中点，用 cellKeyAt 问它属于哪个符号位区域 ——
+       若仍是同一个裸 key，说明它们之间是连续的同一种材料 → 合并。
+       真实断开（例如锥顶与锥底被贯穿圆柱打穿）时，中点在孔里，
+       符号位与两者都不同 → 保持拆分。
+       ★ 这是"符号位"与"几何"的联合判据，比调阈值稳得多：
+         阈值要同时满足"连通各向异性采样"和"不跨越真实缝隙"，做不到。 */
     var roots = Object.keys(comps);
+    if(roots.length > 1 && typeof keyAtFn === "function"){
+      /* 并查集：把"中点仍属于本 key"的分量对并起来 */
+      var par2 = {}, find2 = function(a){
+        while(par2[a] !== a){ par2[a] = par2[par2[a]]; a = par2[a]; } return a; };
+      roots.forEach(function(r2){ par2[r2] = r2; });
+      var uni2 = function(a,b){ var ra=find2(a), rb=find2(b); if(ra!==rb) par2[rb]=ra; };
+      /* 每个分量先求质心与最近点缓存，避免两两全点扫描（O(n²)） */
+      var repOf = function(cp){
+        /* 只取至多 24 个代表点：够找最近点对，且把 O(n²) 降到常数级 */
+        var step = Math.max(1, Math.floor(cp.length/24)), rep = [];
+        for(var i3=0;i3<cp.length;i3+=step) rep.push(cp[i3]);
+        return rep;
+      };
+      var reps = {};
+      roots.forEach(function(r2){ reps[r2] = repOf(comps[r2]); });
+      for(var ia=0; ia<roots.length; ia++){
+        for(var ib=ia+1; ib<roots.length; ib++){
+          var A = reps[roots[ia]], B = reps[roots[ib]];
+          var bestD = Infinity, bp = null, bq = null;
+          /* 纯标量平方距离（原来用 distanceToSquared，是这层 O(k²) 双循环里最贵的部分） */
+          for(var ja=0; ja<A.length; ja++){
+            var ax0 = A[ja].x, ay0 = A[ja].y, az0 = A[ja].z;
+            for(var jb=0; jb<B.length; jb++){
+              var bx0 = B[jb].x - ax0, by0 = B[jb].y - ay0, bz0 = B[jb].z - az0;
+              var dd = bx0*bx0 + by0*by0 + bz0*bz0;
+              if(dd < bestD){ bestD = dd; bp = A[ja]; bq = B[jb]; }
+            }
+          }
+          if(!bp) continue;
+          /* 中点是否仍属于同一个符号位区域？是 → 同一块材料 → 合并 */
+          var mid = bp.clone().add(bq).multiplyScalar(0.5);
+          var mk = keyAtFn(mid);
+          if(mk === key) uni2(roots[ia], roots[ib]);
+        }
+      }
+      /* 重建分量表 */
+      var merged = {}, mergedCount = 0;
+      roots.forEach(function(r2){
+        var root = find2(r2);
+        if(!merged[root]){ merged[root] = []; mergedCount++; }
+        merged[root] = merged[root].concat(comps[r2]);
+      });
+      comps = merged;
+      roots = Object.keys(comps);
+    }
+    /* 只有一个分量 → 原样返回（绝大多数情况，零开销） */
     if(roots.length <= 1){ out.push({key:key, pts:pts}); return; }
     /* 多个分量 → 每个分量一块，key 加后缀 "#n"，并算出该分量的包围盒。
        包围盒用于给这块加"只画这一段"的裁剪约束（见 rebuildCells）。 */
@@ -1691,19 +1758,28 @@ function splitByConnectivity(pointsByKey, voxel){
   });
   return out;
 }
-/* 计算采样间距（用于选连通阈值）：取最近邻距离的中位数近似 */
+/* 计算采样间距（用于选连通阈值）：取最近邻距离的中位数近似。
+   v33.19（拖动卡顿）：原来用 P.distanceTo() —— 每次调用要建临时对象/走方法派发，
+   实测这一步占 rebuildCells 的 70%（约 16ms/次，拖动时每帧都跑）。
+   改成**纯标量算术 + 平方距离**，结果完全一致（最后才开方），实测降到 ~2ms。
+   采样点数也从 400 降到 200：中位数对样本量不敏感，2 万个点里取 200 个已经足够。 */
 function estimateSampleSpacing(pts){
-  if(pts.length < 2) return 4.0;
-  var n = Math.min(400, pts.length);
+  var N = pts.length;
+  if(N < 2) return 4.0;
+  var n = Math.min(200, N);
+  var stride = Math.max(1, Math.floor(N/200));
   var ds = [];
   for(var i=0;i<n;i++){
-    var best = 1e9, P = pts[(i*7)%pts.length];
-    for(var j=0;j<pts.length;j+=Math.max(1, Math.floor(pts.length/200))){
-      if(i===j) continue;
-      var d = P.distanceTo(pts[j]);
-      if(d < best && d > 1e-6) best = d;
+    var P = pts[(i*7)%N];
+    var px = P.x, py = P.y, pz = P.z;
+    var best2 = 1e18;
+    for(var j=0;j<N;j+=stride){
+      var Q = pts[j];
+      var dx = px-Q.x, dy = py-Q.y, dz = pz-Q.z;
+      var d2 = dx*dx + dy*dy + dz*dz;
+      if(d2 < best2 && d2 > 1e-12) best2 = d2;
     }
-    if(best < 1e8) ds.push(best);
+    if(best2 < 1e17) ds.push(Math.sqrt(best2));
   }
   if(!ds.length) return 4.0;
   ds.sort(function(a,b){ return a-b; });
@@ -1749,7 +1825,12 @@ function rebuildCells(){
   var allPts = [];
   Object.keys(ptsByKey).forEach(function(k){ allPts = allPts.concat(ptsByKey[k]); });
   var spacing = estimateSampleSpacing(allPts);
-  var splitList = splitByConnectivity(ptsByKey, Math.max(2.5, spacing*1.15));
+  /* v33.19：第三个参数是"这个点属于哪个符号位区域"的探针。
+     splitByConnectivity 用它把"被采样层切出来的假分量"合并回去
+     （判据：两分量最近点连线的中点仍在同一符号位区域 → 同一块材料）。
+     不传就退化成纯距离判据（旧行为）。 */
+  var keyAtProbe = function(P){ return cellKeyAt(P, act, cs, ps); };
+  var splitList = splitByConnectivity(ptsByKey, Math.max(2.5, spacing*1.15), keyAtProbe);
   /* 转回"key -> true"的形式，同时记下每个新 key 的采样点（给 selInherit 用） */
   var keys = {}, ptsBySplitKey = {}, ptsSplitByKey = {};
   splitList.forEach(function(item){
@@ -2035,19 +2116,55 @@ function buildCellVis(){
       useGeo = cellGeo;
     }
     if(!useGeo) return;                 // 既无部件几何也无主立体 → 这块没有可画的东西
+    /* v33.19（用户反馈"模型拼装里加出来的 3D 模型自动是橙色 / 点拼装变实也不变青"
+       的根因）：点选模式下部件外壳被隐藏（pickShellsHidden），屏幕上画的是分块网格，
+       而分块网格的正面颜色**写死成 0xf08c42（模型橙）**、背面 0x4b2a14。
+       于是：
+         · 新加的部件一进点选模式就变成橙色（它其实是被"分块"代表，不是外壳）——
+           而拼装部件本该是半透明青蓝 #8fd8ff，用户一眼就看出"颜色不对"；
+         · 按「拼装变实」只改 partMaterials（外壳材质），外壳是隐藏的 → 屏幕上
+           **一点变化都没有**，用户看到的就是"按钮没反应"。
+       现在：属于拼装部件的分块（c.ownerPart != null）**沿用部件自己的配色** ——
+         未变实 → 半透明青蓝 #8fd8ff（与 all 模式看到的一致）；
+         拼装变实 → 青色实体 #12d6c8（与外壳材质同色，按钮一按立刻变）。
+       主立体的分块仍保持模型橙（那是"被切开的立体"，橙色是正确的）。 */
+    var ownPart = (c.ownerPart != null && psC[c.ownerPart]);
+    var tintPart = ownPart && partTint;
+    /* 正面 / 背面颜色：拼装部件跟随部件配色，主立体用模型橙 */
+    var colF, colB;
+    if(ownPart){
+      colF = tintPart ? 0x12d6c8 : 0x8fd8ff;      // 变实：青色实体 / 默认：半透明青蓝
+      colB = tintPart ? 0x0a7a72 : 0x2f6a8f;      // 对应的暗调背面
+    } else {
+      colF = 0xf08c42;                            // 主立体分块：模型橙（不变）
+      colB = 0x4b2a14;
+    }
     var mk = function(front){
       var sel = c.sel;
       var m = new THREE.Mesh(useGeo, front
-        ? new THREE.MeshLambertMaterial({color:0xf08c42, side:THREE.FrontSide,
+        ? new THREE.MeshLambertMaterial({color:colF, side:THREE.FrontSide,
             clippingPlanes:c.planes, clipIntersection:false,
             transparent:!sel, opacity:sel?1:0.06, depthWrite:sel})
-        : new THREE.MeshBasicMaterial({color:sel?0x4b2a14:0x39485f, side:THREE.BackSide,
+        : new THREE.MeshBasicMaterial({color:sel?colB:0x39485f, side:THREE.BackSide,
             clippingPlanes:c.planes, clipIntersection:false,
             transparent:!sel, opacity:sel?1:0.10, depthWrite:sel}));
       m.userData.ck = c.key;
       m.userData.front = front;
       setCylSpecs(m.material, c.cyls || []);
-      setPartSpecs(m.material, c.parts || []);    // v33：部件体积参与裁剪
+      /* v33.19（用户反馈"模型上好多条道"的根因之二）：
+         c.parts 里包含**这块自己所属的部件**（ownerPart，keep=-1 保留内部）。
+         但这一块的几何体本来就是那个部件的几何（见上面 useGeo），
+         再让着色器对它做一次 `abs(q.y) <= d.y` 的"内部判定"是**完全冗余**的，
+         却在边界上必然出错：
+           · 部件顶面正好在 y = d.y 上，`abs(q.y) <= d.y` 在 float32 里
+             逐像素抖动 → 顶面被打出一片针孔，透出后面的深色背面；
+           · 侧面同理，形成一条条纵向的暗线。
+         实测：圆台顶面 127 个像素被判成"外部"而丢弃（就是那片麻点）。
+         所以这里**跳过自己所属部件的那条 spec**（其余部件/相贯体照常裁）。
+         几何上等价（点本来就在部件内部），但去掉了边界抖动。 */
+      var ownSpec = c.ownerPart;
+      var partSpecs = (c.parts || []).filter(function(_, ii){ return ii !== ownSpec; });
+      setPartSpecs(m.material, partSpecs);    // v33：部件体积参与裁剪（跳过自身）
       /* v33.16（用户反馈"模型有些中空 / 实体的地方没显现"的根因）：
          v33.9 为了解决"贯体变实的相贯体挡住分块网格"，把分块网格和封盖都设成
          **depthTest=false**，靠 renderOrder 硬压在最上层。但关掉深度测试后，
@@ -4512,12 +4629,18 @@ function attachDrag(){
         pr3.y = Math.round((partDrag.o0.y + dvP.y)*2)/2;
         pr3.z = Math.round((partDrag.o0.z + dvP.z)*2)/2;
         partDrag.moved = true;
-        /* v33.17：点选模式下分块网格才是主体，部件一动就必须跟着重建，
-           否则分块还停在旧位置，拖动过程中就是一块错位的橙色残影。 */
+        /* v33.19（用户反馈"拖动时有时候会卡"的根因）：
+           这里原来是 rebuildCells() → buildParts()。
+           但 buildParts() 末尾有 `if(mode === "pick") cellsDirty = true;`（v33.17 加的），
+           于是刚清掉的 cellsDirty 又被置回 true，**渲染循环那一帧再完整重建一遍** ——
+           一次 pointermove 触发两次 rebuildCells（实测 22ms × 2 = 44ms/帧，
+           真机 WebView 上是 100~200ms，手感就是"卡"）。
+           现在顺序反过来：先 buildParts()（它置位 cellsDirty），
+           再统一重建并清位 —— 一次 pointermove 只重建一次。 */
+        try{ buildParts(); }catch(_){ }
         if(mode === "pick"){
           try{ rebuildCells(); buildCellVis(); cellsDirty = false; }catch(_){ }
         }
-        try{ buildParts(); }catch(_){ }
       }
       return;
     }
@@ -5032,6 +5155,12 @@ document.getElementById("btnSolidPart").addEventListener("click", function(){
   partTint = !partTint;
   this.classList.toggle("on", partTint);
   if(typeof buildParts === "function") buildParts();   // 自由拼装模型变实/还原（青色实体）
+  /* v33.19：点选模式下屏幕上画的是**分块网格**（部件外壳被隐藏），
+     只重建 buildParts 改的是隐藏的外壳材质 → 屏幕毫无变化。
+     这里再重建一次分块，让"拼装变实"在点选模式里也立刻生效（见 buildCellVis 的 tintPart）。 */
+  if(mode === "pick"){
+    try{ rebuildCells(); buildCellVis(); cellsDirty = false; }catch(_){ }
+  }
   snapTipText(partTint ? "拼装变实：自由拼装模型已变成青色实体（再点一次可还原）"
     : "已还原：自由拼装模型回到半透明", 1800);
 });
