@@ -4240,7 +4240,13 @@ function tapPick(e){
      点它应当把"这一整块相贯体材料"隐藏掉（隐藏后 buildCylVis 的 bodyHidden 会整块不画）。
      只在 pick 模式、且该相贯体是"实体"（!c.hole）时参与；打孔的圆环已有 hlKeep 兜底。 */
   if(cyls.length){
-    var cvs = activeCyls();
+    /* v33.18 修正：cylVis 的下标对应的是 **cyls**（buildCylVis 用 cyls.forEach），
+       不是 activeCyls()（那个只含"启用"的，且按 _id 重排过）。
+       用 activeCyls() 去索引 cylVis，只要有一个相贯体被停用，下标就整体错位 ——
+       点中 A 的伸出段会把 B 的材料藏掉，甚至因为 hole 判断不同而完全没反应。
+       所以：**命中用 cyls 索引**（取 c 和 hole），**算 key 用 activeCyls()**
+       （cellKeyAt 的 key 是按启用集合拼的，两边语义不同，不能混用）。 */
+    var cvsKey = activeCyls();
     var chits = [];
     for(var vi=0; vi<cylVis.length; vi++){
       var vv = cylVis[vi];
@@ -4262,8 +4268,8 @@ function tapPick(e){
     }
     if(chits.length){
       chits.sort(function(a,b){ return a.dist - b.dist; });
-      var chBest = chits[0], cc2 = cvs[chBest.ci];
-      if(cc2 && !cc2.hole){
+      var chBest = chits[0], cc2 = cyls[chBest.ci];
+      if(cc2 && cc2.on && !cc2.hole){
         /* 点中的是哪一类区域？用 cellKeyAt 求出该点的符号位，
            再把"同属这一侧材料"的分块一起切掉 —— 这样点伸出段就等于点它所属的那一块。
            注意：命中点**正好落在相贯体表面上**，cellKeyAt 遇到"恰在表面"会返回 null
@@ -4273,7 +4279,7 @@ function tapPick(e){
         var probeOff = [0.15, 0.4, 1.0, 2.2, 4.5];
         for(var po=0; po<probeOff.length && kk===null; po++){
           kk = cellKeyAt(chBest.point.clone().addScaledVector(rd2, probeOff[po]),
-                         activeFaceData(), cvs, activeParts());
+                         activeFaceData(), cvsKey, activeParts());
         }
         if(kk !== null){
           var kAct = resolveToActualCellKey(kk, chBest.point);

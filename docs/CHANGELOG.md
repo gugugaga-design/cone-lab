@@ -1,6 +1,60 @@
 # 变更日志
 
-## v33.17（当前版本）
+## v33.18（当前版本）
+
+修 v33.17 里自己引入的一个下标错位缺陷（自查发现，用户未反馈）。
+
+### 根因：`cylVis` 的下标对应 `cyls`，不是 `activeCyls()`
+
+v33.17 给 `tapPick()` 加"相贯体伸出段也能点"时，写成：
+
+```js
+var cvs = activeCyls();
+...
+var chBest = chits[0], cc2 = cvs[chBest.ci];   // ← chBest.ci 是 cylVis 的下标
+```
+
+但 `cylVis` 是 `buildCylVis()` 里 `cyls.forEach(function(c, i){...})` 建的 ——
+下标对应**全部** `cyls`；而 `activeCyls()` 只含"启用"的、且按 `_id` 重排过。
+
+后果：只要有一个相贯体被停用，下标就整体错位 ——
+**点 A 的伸出段会藏掉 B 的材料**，或者因为 `hole` 判断落在别的对象上而完全没反应。
+
+实测（停用小圆柱 r=6、只留大圆柱 r=14，点大圆柱伸出段）：
+
+```
+v33.17:  activeCyls()[0].r = 14，但 cylVis[0] 画的是 r = 6  → 错位
+v33.18:  命中段 = c14:3（大圆柱自己的 _id）                 → 正确
+```
+
+### 修复
+
+命中判定改用 `cyls` 索引（并显式判 `cc2.on && !cc2.hole`），
+算 key 仍用 `activeCyls()`（`cellKeyAt` 的 key 按启用集合拼，语义不同，不能混用）。
+
+```js
+var cvsKey = activeCyls();                 // 算 key 用
+...
+var chBest = chits[0], cc2 = cyls[chBest.ci];   // 命中用 cyls 索引
+if(cc2 && cc2.on && !cc2.hole){ ... cellKeyAt(..., cvsKey, ...) }
+```
+
+### 回归
+
+`test2/pickfix.js` 新增 5b 两项（共 **31 项，全过**），
+专门覆盖"停用一个相贯体后点另一个的伸出段"。
+
+| 项 | 值 |
+|---|---|
+| 源码 md5 | `3e68c6b56acdf09ec7abf2a75c9c7be5` |
+| APK | `dist/cone-lab-v33.18.apk` |
+| APK md5 | `37b12b9ddab405410bf09e63dab05bbd` |
+| APK 大小 | 3,507,747 字节 |
+| APK 内 HTML md5 | `3e68c6b56acdf09ec7abf2a75c9c7be5`（与源码一致） |
+
+---
+
+## v33.17
 
 修复用户反馈的三个「点选保留部分」问题：
 
