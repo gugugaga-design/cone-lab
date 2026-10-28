@@ -92,12 +92,19 @@ console.log(JSON.stringify(r5,null,1));
 /* 面分 2 段 × 相贯体分 2 × 部件分 3 类（内/上外/下外）= 最多 12，但很多组合在几何上不存在
    （例如"长方体内部"和"面以上"在圆锥里没交集）。这里只要求分区明显多于只有面时的 2 块。 */
 ok("四类切割叠加后区域数明显增多（>=6）", r5.cells >= 6, "cells="+r5.cells);
+/* v33.18 修正：这条原来拿 **裸 key**（`cellKeyAt` 不带后缀）去 === **带后缀的 c.key**
+   （连通性分割产生的 `...#0` / `...#1`），带后缀的块永远匹配不上 → 误报"伪块"。
+   正确口径：两边都剥掉 `#n` 再比，并且把**部件体采样点**也纳入（这些薄片区域
+   只由部件采样点覆盖，主立体采样点密度不够）。 */
 ok("每个区域都有真实采样点（无伪块）", app.run(`(function(){
   var act=activeFaceData(), cs=activeCyls(), ps=activeParts();
-  var pts=samplePoints(act), bad=[];
+  var bare=function(k){ return String(k).replace(/[#][0-9]+$/, ""); };
+  var pts=samplePoints(act).slice();
+  ps.forEach(function(pr){ partBodyPoints(pr).forEach(function(p){ pts.push(p); }); });
+  var bad=[];
   cells.forEach(function(c){
-    var n=0;
-    pts.forEach(function(p){ if(insideCone(p) && cellKeyAt(p,act,cs,ps)===c.key) n++; });
+    var n=0, k=bare(c.key);
+    pts.forEach(function(p){ if(cellKeyAt(p,act,cs,ps)===k) n++; });
     if(n===0) bad.push(c.key);
   });
   return bad.length===0;
@@ -124,13 +131,22 @@ const r6 = app.run(`(function(){
     }
   }
   var brute=Object.keys(found).sort();
-  var have=cells.map(function(c){return c.key;}).sort();
-  return {brute:brute.length, sampled:have.length,
-          missing: brute.filter(function(k){ return have.indexOf(k)<0; }),
-          extra: have.filter(function(k){ return brute.indexOf(k)<0; })};
+  /* v33.18：cells 里可能有连通性分割产生的 "...#0" / "...#1"。
+     它们共享同一个符号位 key，穷举（cellKeyAt）只会产出裸 key，
+     所以这里按**剥后缀后的集合**比较"区域数/漏块"，否则必然误报。 */
+  var bare=function(k){ return String(k).replace(/[#][0-9]+$/, ""); };
+  var bruteBare={}; brute.forEach(function(k){ bruteBare[bare(k)]=1; });
+  var haveBare={}; cells.forEach(function(c){ haveBare[bare(c.key)]=1; });
+  var bb=Object.keys(bruteBare).sort(), hb=Object.keys(haveBare).sort();
+  return {brute:bb.length, sampled:hb.length,
+          missing: bb.filter(function(k){ return hb.indexOf(k)<0; }),
+          extra: hb.filter(function(k){ return bb.indexOf(k)<0; }),
+          cellsTotal: cells.length, bruteRaw: brute.length};
 })()`);
 console.log(JSON.stringify(r6,null,1));
-ok("穷举区域数 == 分块数", r6.brute === r6.sampled, "brute="+r6.brute+" sampled="+r6.sampled);
+ok("穷举区域数 == 分块数（按剥后缀的区域集合比较）",
+   r6.brute === r6.sampled,
+   "brute="+r6.brute+" sampled="+r6.sampled+" (cells 原始 "+(r6.cellsTotal||"?")+" 块)");
 ok("没有漏块", r6.missing.length === 0, JSON.stringify(r6.missing));
 
 console.log("\n" + (bad===0 ? "ALL OK" : bad + " FAILURE(S)"));

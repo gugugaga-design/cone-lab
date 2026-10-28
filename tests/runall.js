@@ -10,21 +10,22 @@ const vm = require("vm");
 
 const ROOT = path.resolve(__dirname, "..");
 const SUITES = [
-  ["accept.js",  "四项需求验收"],
-  ["edge.js",    "边界/退化/性能"],
-  ["regions.js", "分区数=几何分区数"],
-  ["curves.js",  "相贯线几何精度"],
-  ["cellgeo.js", "分块裁剪互斥完备"],
-  ["cylpick.js", "相贯体裁切点选"],
-  ["tintpick.js","贯体变实+点选遮挡"],
-  ["eventflow.js","真实DOM事件流点选"],
-  ["verify.js",   "独立 harness #1"],
+  ["test2/accept.js",  "四项需求验收"],
+  ["test2/edge.js",    "边界/退化/性能"],
+  ["test2/regions.js", "分区数=几何分区数"],
+  ["test2/curves.js",  "相贯线几何精度"],
+  ["test2/cellgeo.js", "分块裁剪互斥完备"],
+  ["test2/cylpick.js", "相贯体裁切点选"],
+  ["test2/tintpick.js","贯体变实+点选遮挡"],
+  ["test2/eventflow.js","真实DOM事件流点选"],
+  ["test2/pickfix.js", "点选中空/伸出段/移动残留"],
+  ["test/verify.js",   "独立 harness #1"],
   ["test3/regions.js", "独立 harness #2"],
 ];
 
 let fail = 0;
 SUITES.forEach(function(s){
-  const file = path.join(__dirname, s[0]);
+  const file = path.join(ROOT, s[0]);
   const code = fs.readFileSync(file, "utf8");
   const captured = { lines: [], exitCode: 0, killed: false };
   const sandbox = {

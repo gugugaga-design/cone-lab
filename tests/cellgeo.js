@@ -53,19 +53,69 @@ function scenario(shapeName, setupBox, label){
       }
     }
     var report=[];
+    /* v33.18：cells 里可能有连通性分割产生的 "...#0" / "...#1"，
+       而 cellKeyAt 只产出裸 key。原来直接 k===c.key 比较，
+       带后缀的块 ownTotal 恒为 0（coverage=0），且所有同符号位的点
+       都被算成 foreign —— 误报"覆盖率 0% / 越界覆盖"。
+       正确口径：两边都剥掉后缀再比。 */
+    var bare=function(k){ return String(k).replace(/[#][0-9]+$/, ""); };
     cells.forEach(function(c){
       var ownAccepted=0, ownTotal=0, foreignAccepted=0;
+      var ck=bare(c.key);
       pts.forEach(function(P){
         var k=cellKeyAt(P,act,cs,ps);
         if(k===null) return;
         var acc=accepts(c,P);
-        if(k===c.key){ ownTotal++; if(acc) ownAccepted++; }
+        if(bare(k)===ck){ ownTotal++; if(acc) ownAccepted++; }
         else if(acc) foreignAccepted++;
       });
       report.push({key:c.key,
                    coverage: ownTotal? Math.round(ownAccepted/ownTotal*1000)/10 : 0,
                    foreign: foreignAccepted,
                    ownPts: ownTotal});
+    });
+    /* 按"剥后缀后的 key"分组，统计每组的**并集**覆盖：
+       同一符号位的多个连通分量，合起来必须把这个符号位区域全部覆盖。 */
+    var groups={};
+    cells.forEach(function(c){
+      var ck=bare(c.key);
+      (groups[ck]=groups[ck]||{key:ck, total:0, hit:0, cells:0}).cells++;
+    });
+    var pts2=[];   // 复用同一批采样点
+    cells.length;  // no-op，保持结构清晰
+    (function(){
+      for(var i3=0;i3<=70;i3++){
+        var y3=-S.H/2+S.H*i3/70, rm3=radiusAt(y3);
+        if(rm3<=0) continue;
+        for(var j3=0;j3<40;j3++){
+          var th3=j3/40*Math.PI*2;
+          for(var q3=0;q3<=5;q3++){
+            var rr3=rm3*q3/5;
+            var P3=new THREE.Vector3(rr3*Math.cos(th3), y3, rr3*Math.sin(th3));
+            if(insideCone(P3)) pts2.push(P3);
+          }
+        }
+      }
+    })();
+    pts2.forEach(function(P){
+      var k=cellKeyAt(P,act,cs,ps);
+      if(k===null) return;
+      var ck=bare(k), g=groups[ck];
+      if(!g) return;
+      g.total++;
+      /* 只要该组里**任意一个**分量接受这个点，就算被覆盖 */
+      var hit=false;
+      cells.forEach(function(c){
+        if(hit) return;
+        if(bare(c.key)!==ck) return;
+        if(accepts(c,P)) hit=true;
+      });
+      if(hit) g.hit++;
+    });
+    var groupCover=Object.keys(groups).map(function(k){
+      var g=groups[k];
+      return {key:k, cells:g.cells, pts:g.total,
+              cover: g.total? Math.round(g.hit/g.total*1000)/10 : 100};
     });
     /* 再验证「隐藏任意一块，其余块仍可见」 */
     var vanishCombos=0;
@@ -86,16 +136,24 @@ function scenario(shapeName, setupBox, label){
       });
       if(!anyVisible) vanishCombos++;
     });
-    return {cells:cells.length, report:report, vanishCombos:vanishCombos};
+    return {cells:cells.length, report:report, groupCover:groupCover, vanishCombos:vanishCombos};
   })()`);
 
   section(label);
   r.report.forEach(function(x){
     console.log("    " + JSON.stringify(x));
   });
-  ok("所有分块覆盖率 100%（自己的区域全覆盖）",
-     r.report.every(function(x){ return x.coverage >= 99.9; }),
-     "min=" + Math.min.apply(null, r.report.map(function(x){return x.coverage;})) + "%");
+  r.groupCover.forEach(function(x){
+    console.log("    [group] " + JSON.stringify(x));
+  });
+  /* v33.18：连通性分割会把同一个符号位 key 拆成 "...#0" / "...#1" 等多个分量，
+     每个分量只覆盖共享区域的一部分 —— 所以**单块的 coverage 不必是 100%**，
+     正确的断言是"同一 key 的所有分量合起来覆盖 100%"（下面 r.groupCover）。
+     原来要求 every(coverage>=99.9) 是把"分量"误当成"整个区域"，必然误报。 */
+  ok("同符号位 key 的所有分量合起来覆盖 100%（自己的区域全覆盖）",
+     r.groupCover.every(function(x){ return x.cover >= 99.9; }),
+     "min=" + Math.min.apply(null, r.groupCover.map(function(x){return x.cover;})) + "%" +
+     "  (分组 " + r.groupCover.length + " 个)");
   ok("无越界覆盖（不接受任何别块的点）",
      r.report.every(function(x){ return x.foreign === 0; }),
      "foreign=" + JSON.stringify(r.report.map(function(x){return x.foreign;})));
