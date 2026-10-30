@@ -570,14 +570,41 @@ function resetView(){
   camera.lookAt(0,0,0);
   controls.target.set(0,0,0);
   controls.update();
+  curView = "";
   markView("");
 }
-/* 三视图：正视于 主视图(+Z) / 俯视图(+Y) / 左视图(-X)，用正交相机真投影 */
-var VIEW_DIRS = { front:[0,0,1], top:[0,1,0], left:[-1,0,0] };
+/* 三视图：正视于 主视图(+Z) / 俯视图(+Y) / 左视图(-X)，用正交相机真投影。
+   v33.27：**每个按钮点第二次就翻到它的对面视图** ——
+     主视 ⇄ 后视（+Z ⇄ -Z）、俯视 ⇄ 仰视（+Y ⇄ -Y）、左视 ⇄ 右视（-X ⇄ +X）。
+   方向/上向量都按第一角画法给：
+     · 后视 = 从 -Z 往 +Z 看，屏幕右 = -X（与主视左右镜像）；
+     · 仰视 = 从 -Y 往 +Y 看，屏幕右 = +X（与俯视上下镜像，水平方向仍对齐）；
+     · 右视 = 从 +X 往 -X 看，屏幕右 = -Z（与左视左右镜像）。
+   屏幕上左右/上下关系保持"长对正、高平齐、宽相等"那一套不变。 */
+var VIEW_DIRS = { front:[0,0,1], top:[0,1,0], left:[-1,0,0],
+                  back:[0,0,-1], bottom:[0,-1,0], right:[1,0,0] };
+/* 同一对里的"正面"视图（按钮 data-v 记的是它）与"背面"视图 */
+var VIEW_PAIR  = { front:"back", back:"front", top:"bottom", bottom:"top", left:"right", right:"left" };
+var VIEW_BASE  = { front:"front", back:"front", top:"top", bottom:"top", left:"left", right:"left" };
+var VIEW_LABEL = { front:"主视", back:"后视", top:"俯视", bottom:"仰视", left:"左视", right:"右视" };
+/* 按钮文字永远显示"当前这个按钮处于哪一面"：主视 ↔ 后视 共用第一个按钮 */
 function markView(name){
+  var base = VIEW_BASE[name] || "";
   Array.prototype.forEach.call(document.querySelectorAll("#views button"), function(b){
-    b.classList.toggle("on", b.getAttribute("data-v") === name);
+    var prim = b.getAttribute("data-v");
+    var on = (prim === base);
+    b.classList.toggle("on", on);
+    var txt = (on && name) ? VIEW_LABEL[name] : (VIEW_LABEL[prim] || prim);
+    if(txt) b.textContent = txt;
   });
+}
+/* 点按钮：不在这一组 → 先到正面；已经在正面 → 翻到对面；在对面 → 翻回正面。
+   注意 setView() 本身保持"无状态"，别处（accept/verify 等测试）反复调它不会互相影响。 */
+function viewButtonClick(prim){
+  if(!VIEW_DIRS[prim]) return;
+  var next = (curView === prim) ? VIEW_PAIR[prim] : prim;
+  setView(next);
+  snapTipText(VIEW_LABEL[next] + "图" + (VIEW_PAIR[next] ? "（再点一次切到" + VIEW_LABEL[VIEW_PAIR[next]] + "）" : ""), 1600);
 }
 var curView = "";
 function setView(name){
@@ -585,8 +612,9 @@ function setView(name){
   useOrthoCam(true);
   window.__activeCam = orthoCam;
   orthoCam.up.set(0,1,0);
-  // 俯视：屏幕上方向取 -Z（前方朝屏幕下方），符合三视图习惯
+  // 俯视：屏幕上方向取 -Z（前方朝屏幕下方），符合三视图习惯；仰视取 +Z（镜像）
   if(dir[1] > 0.5) orthoCam.up.set(0,0,-1);
+  if(dir[1] < -0.5) orthoCam.up.set(0,0,1);
   orthoCam.position.set(dir[0]*FLAT_DIST, dir[1]*FLAT_DIST, dir[2]*FLAT_DIST);
   orthoCam.lookAt(0,0,0);
   camera.position.set(dir[0]*FLAT_DIST, dir[1]*FLAT_DIST, dir[2]*FLAT_DIST);
@@ -3258,7 +3286,22 @@ function bodySurfPoint(c, s, t, B, a, P){
   else { d -= 4*w2 + 2*h2; u = -w2; v = h2 - d; }
   return P.clone().addScaledVector(a, ax).addScaledVector(B.U, u).addScaledVector(B.V, v);
 }
-/* 相贯线：沿周长取若干条母线，在每条母线上找"进出主立体"的零点，再按第几次相交分组连成曲线 */
+/* ---- 相贯线：相贯体表面 ∩ 主立体表面（v33.27 重写）----
+   旧实现（v19~v26）是"沿周长取 N 条母线，在每条母线上沿轴找零穿越点"。
+   这条参数化方式有两个结构性缺陷，用户这次报的"相贯线显示不全"就是它们：
+     ① **端面从来没采样过**：母线只铺在相贯体的侧表面上，
+        长方体的两个端面被立体切出来的那段交线整段不画；
+     ② 当交线在某处几乎**平行于轴向**时，相邻母线之间 z 方向的距离会突然爆掉
+        （dz/du → ∞），被 maxGap 判成"断开了" → 中间一段被丢掉。
+   用户场景（圆锥 + 实体正方体 左右-29 / 高低-22.5 / 前后0 / 棱长29）实测：
+     真实交线 408 个采样点里 **188 个（46%）没被画出来**，最远偏 12.75mm。
+   现在改成和"部件相贯线"（partSurfZeroChains）**同一套做法**：
+     · 把相贯体的**全部表面**（侧面 + 真实端面）都铺成无奇异参数化的网格；
+     · marching squares 用"网格边上的零穿越"提取等值线，拓扑由共享边保证，
+       不再依赖任何距离阈值；
+     · 相邻两张面共用同一条边界、同一组采样点 → 接点**完全重合**，直接拼接。
+
+   顺带保留 bodySurfPoint()（见上，逐母线取样），诊断脚本还在用。 */
 /* 把折线按总长等分加密到至少 minN 点（只插值、不改变形状） */
 function densifyPolyline(pts, minN){
   if(!pts || pts.length < 2) return pts;
@@ -3280,78 +3323,109 @@ function densifyPolyline(pts, minN){
   if(out.length < N) out.push(pts[pts.length-1].clone());
   return out;
 }
-function penetrationCurves(c){
-  /* 相贯线 = 相贯体表面与主立体表面的交线。
-     在相贯体表面上取样，用 solidOutside() 判内外，找符号变化点。
-     v19 的两个漏显示毛病：
-       ① 取样太稀 → 交线窄或只擦到一点时整条丢失；
-       ② 一条相贯线常被切成多段 → 只画了"完整段"。
-     v20：加密取样 + 分段合并。 */
+/* 相贯体的"全部表面"网格：
+     圆柱   → 侧面（96×NV）+ 两个真实端面（96×6 极坐标盘）
+     方/矩形 → 4 个侧面（NW×NL / NH×NL）+ 2 个端面（NW×NH）
+   ★ 相邻两张面共用同一条边界、同一组采样点（同样的 NW/NH/NL），
+     于是 marching squares 在边界上求出的零穿越点**完全重合**，跨面拼接不需要靠距离猜。
+   ★ 无限贯穿（c.len = 0）**没有端面**：bodyLen() 给的那段只是"为了看得见"画长了，
+     把端面也采进来会在体内多出根本不存在的交线，所以必须跳过。 */
+function bodySurfPatches(c){
   var a = cylAxis(c), P = cylPoint(c), B = cylBasis(a);
-  /* v26：加密采样（96/80 → 144/112，轴向 60 → 84），二分 12 → 16 次。
-     相贯线是"逐条母线找零点"拼出来的，母线越密、轴向步长越小，曲线越贴真实交线。 */
-  var NS = c.shape === "cyl" ? 144 : 112, NT = 84;
-  var groups = [], hits, k;
-  function push(k, pt){ if(!groups[k]) groups[k] = []; groups[k].push(pt); }
-  for(var si=0; si<=NS; si++){
-    var s = (si%NS)/NS;
-    hits = [];
-    var prev = null, prevF = 0;
-    for(var ti=0; ti<=NT; ti++){
-      var pt = bodySurfPoint(c, s, ti/NT, B, a, P);
-      var f = solidOutside(pt);
-      if(prev && ((prevF < 0 && f >= 0) || (prevF > 0 && f <= 0))){
-        var lo = prev.clone(), hi = pt.clone(), flo = prevF;
-        for(var kk=0; kk<16; kk++){
-          var mid = lo.clone().lerp(hi, 0.5), fm = solidOutside(mid);
-          if((flo < 0) === (fm < 0)){ lo = mid; flo = fm; } else { hi = mid; }
-        }
-        hits.push(lo.clone().lerp(hi, 0.5));
-      }
-      prev = pt; prevF = f;
+  var L = bodyLen(c), hs = cutHalf(c), patches = [];
+  var finite = (c.len > 0);
+  function grid(nu, nv, fn){
+    var pts = [];
+    for(var iv=0; iv<=nv; iv++){
+      var row = [];
+      for(var iu=0; iu<=nu; iu++) row.push(fn(iu/nu, iv/nv));
+      pts.push(row);
     }
-    for(k=0; k<hits.length; k++) push(k, hits[k]);
+    patches.push(pts);
   }
-  /* 同一 s 上可能出现多个交点（进-出-进-出，如圆柱穿圆柱），
-     hits[k] 按序号分组会把不同循环混在一起 → 改成：
-     先按 s 收集"每个交点的序号"，再按序号成链。 */
-  var out = [];
-  for(k=0; k<groups.length; k++){
-    var g = groups[k];
-    if(!g || g.length < 2) continue;
-    var segs = [], cur = [g[0]];
-    /* v22：maxGap 原来是"半径的 0.8 倍"这种粗放绝对值，交线斜穿相邻母线时
-       点距会超过它 → 被误判为断开 → 整段丢失（"显示不全"的主因之一）。
-       改成"约 3 个相邻母线的弧长"，并留一个与尺寸相关的地板值。 */
-    var arcStep = (c.shape === "cyl")
-      ? (2*Math.PI*c.r/NS)
-      : (2*((cutHalf(c).hw + cutHalf(c).hh))*4/NS);
-    var maxGap = Math.max(2.5, arcStep*3);
-    for(var i2=1; i2<g.length; i2++){
-      if(g[i2].distanceTo(g[i2-1]) > maxGap){
-        if(cur.length > 1) segs.push(cur);
-        cur = [g[i2]];
-      } else cur.push(g[i2]);
-    }
-    if(cur.length > 1) segs.push(cur);
-    // 合并首尾相接的段（一条相贯线常被采样打断）
-    for(var m=0; m<segs.length-1; m++){
-      var a1 = segs[m], b1 = segs[m+1];
-      var dEnd = a1[a1.length-1].distanceTo(b1[0]);
-      var dStart = a1[0].distanceTo(b1[b1.length-1]);
-      /* v22：原来的绝对阈值 12 与模型尺度无关 —— R=30 时可能跨过真实缺口错误粘连，
-         R=26 时又可能不够。改成相对模型尺寸。 */
-      var mergeGap = Math.max(2.5, bodyLen(c)*0.06);
-      if(dEnd < mergeGap || dStart < mergeGap){
-        if(dStart < dEnd) b1 = b1.slice().reverse();
-        segs[m] = a1.concat(b1);
-        segs.splice(m+1, 1); m--;
+  if(c.shape === "cyl"){
+    var NU = 96, NV = Math.max(12, Math.min(48, Math.round(L/2)));
+    grid(NU, NV, function(u,v){
+      var th = u*Math.PI*2;
+      return P.clone().addScaledVector(a, (v-0.5)*L)
+        .addScaledVector(B.U, Math.cos(th)*c.r).addScaledVector(B.V, Math.sin(th)*c.r);
+    });
+    if(finite) [1,-1].forEach(function(sg){
+      grid(NU, 6, function(u,v){
+        var th = u*Math.PI*2, rr = c.r*v;
+        return P.clone().addScaledVector(a, sg*L/2)
+          .addScaledVector(B.U, Math.cos(th)*rr).addScaledVector(B.V, Math.sin(th)*rr);
+      });
+    });
+    return patches;
+  }
+  var w2 = hs.hw, h2 = hs.hh, U = B.U, V = B.V;
+  var NW = Math.max(8, Math.min(64, Math.round(2*w2/1.2)));
+  var NH = Math.max(8, Math.min(64, Math.round(2*h2/1.2)));
+  var NL = Math.max(8, Math.min(64, Math.round(L/1.2)));
+  /* -V 面：u 沿 U */
+  grid(NW, NL, function(u,v){
+    return P.clone().addScaledVector(U, (u-0.5)*2*w2)
+      .addScaledVector(V, -h2).addScaledVector(a, (v-0.5)*L); });
+  /* +U 面：u 沿 V */
+  grid(NH, NL, function(u,v){
+    return P.clone().addScaledVector(U, w2)
+      .addScaledVector(V, (u-0.5)*2*h2).addScaledVector(a, (v-0.5)*L); });
+  /* +V 面 */
+  grid(NW, NL, function(u,v){
+    return P.clone().addScaledVector(U, (u-0.5)*2*w2)
+      .addScaledVector(V, h2).addScaledVector(a, (v-0.5)*L); });
+  /* -U 面 */
+  grid(NH, NL, function(u,v){
+    return P.clone().addScaledVector(U, -w2)
+      .addScaledVector(V, (u-0.5)*2*h2).addScaledVector(a, (v-0.5)*L); });
+  if(finite) [1,-1].forEach(function(sg){
+    grid(NW, NH, function(u,v){
+      return P.clone().addScaledVector(U, (u-0.5)*2*w2)
+        .addScaledVector(V, (v-0.5)*2*h2).addScaledVector(a, sg*L/2); });
+  });
+  return patches;
+}
+/* 两条链按"哪两个端点相接"合并（mode 见调用处） */
+function mergeChainsAt(mode, A, B){
+  var a = A.slice(), b = B.slice();
+  if(mode === 0) return a.concat(b);                       // A尾 ~ B头
+  if(mode === 1) return a.concat(b.reverse());             // A尾 ~ B尾
+  if(mode === 2) return a.reverse().concat(b);             // A头 ~ B头
+  return b.concat(a);                                     // A头 ~ B尾
+}
+/* 把首尾相接的链拼成更长的链（跨面接点；相邻面边界采样重合，所以 tol 很小就够） */
+function stitchChains(chains, tol){
+  var list = (chains || []).map(function(p){ return p.slice(); });
+  if(list.length < 2) return list;
+  var tol2 = tol*tol, changed = true, guard = 0;
+  function near(p, q){ return p.distanceToSquared(q) <= tol2; }
+  while(changed && guard++ < 400){
+    changed = false;
+    for(var i=0; i<list.length && !changed; i++){
+      for(var j=i+1; j<list.length && !changed; j++){
+        var A = list[i], B = list[j];
+        if(A.length < 2 || B.length < 2) continue;
+        var mode = -1;
+        if(near(A[A.length-1], B[0])) mode = 0;
+        else if(near(A[A.length-1], B[B.length-1])) mode = 1;
+        else if(near(A[0], B[0])) mode = 2;
+        else if(near(A[0], B[B.length-1])) mode = 3;
+        if(mode < 0) continue;
+        var merged = mergeChainsAt(mode, A, B);
+        list.splice(j, 1); list[i] = merged;
+        changed = true;
       }
     }
-    /* v22：原来是 >=3，交线恰好只跨 1~2 条母线（擦边）时整段丢失。改成 >=2。 */
-    segs.forEach(function(sg){ if(sg.length >= 2) out.push(sg); });
   }
-  return out;
+  return list;
+}
+function penetrationCurves(c){
+  var chains = surfZeroChains(bodySurfPatches(c), function(p){ return solidOutside(p) > 0; });
+  /* 边界采样完全重合，理论上 1e-3 就够；留一点余量防浮点抖动。
+     上限 0.8mm 是刻意的：再大就可能把两条真实的相邻曲线误粘成一条。 */
+  var tol = Math.max(0.06, Math.min(0.8, bodyLen(c)*0.02));
+  return stitchChains(chains, tol);
 }
 function buildCylVis(skipCurves){
   cylVis.forEach(function(v){
@@ -3821,9 +3895,15 @@ function partSurfPatches(pr){
    由相邻单元共享（用边名做 key），单元内两两连接，天然得到正确的拓扑连通性，
    不再依赖任何距离阈值。最后按邻接表把边串成有序折线。 */
 function partSurfZeroChains(ia, insideFn){
-  var A = parts[ia];
+  return surfZeroChains(partSurfPatches(parts[ia]), insideFn);
+}
+/* marching squares 的通用核心：patches = 若干张 (nv+1)×(nu+1) 点阵（同一张面内 u/v 网格），
+   insideFn(P) 为 true 表示 P 在"另一对象"内部。返回一串有序折线。
+   v33.27：原来只被 partSurfZeroChains 用，现在 penetrationCurves（主立体 ∩ 相贯体）
+   也直接复用它 —— 两条路径共用同一套拓扑提取，不再各写一份。 */
+function surfZeroChains(patches, insideFn){
   var chains = [];
-  partSurfPatches(A).forEach(function(rows){
+  patches.forEach(function(rows){
     var nv = rows.length, nu = rows[0].length;
     if(nv < 2 || nu < 2) return;
     var i, j, sg = [];
@@ -5294,7 +5374,7 @@ document.getElementById("btnQuads").addEventListener("click", function(){
   this.style.color = showQuads ? "" : "var(--sub)";
 });
 Array.prototype.forEach.call(document.querySelectorAll("#views button"), function(b){
-  b.addEventListener("click", function(){ setView(b.getAttribute("data-v")); });
+  b.addEventListener("click", function(){ viewButtonClick(b.getAttribute("data-v")); });
 });
 function updateHint(){
   var tag = SHAPES[shape].short + " · ";

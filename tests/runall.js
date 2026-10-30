@@ -21,6 +21,8 @@ const SUITES = [
   ["tests/tintpick.js", "贯体变实+点选遮挡"],
   ["tests/eventflow.js","真实DOM事件流点选"],
   ["tests/pickfix.js",  "点选中空/伸出段/移动残留"],
+  ["tests/cylcurve.js", "相贯线完整性（覆盖率）"],
+  ["tests/viewtoggle.js","三视图二阶切换"],
   ["tests/verify.js",   "独立 harness #1"],
   ["tests/test3/regions.js", "独立 harness #2"],
 ];
