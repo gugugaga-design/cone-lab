@@ -1341,8 +1341,71 @@ function cellKeyAt(p, act, csArg, psArg){
 function cylAxisExtent(c){
   var ax = cylAxis(c).clone().normalize();
   var p = cylPoint(c);
+  /* v33.25：盲孔用"不对称的轴向窗口"，不再是 ±halfLen */
+  var bl = cylBlind(c);
+  if(bl) return {ax:ax, p:p, halfLen:null, tTop:bl.t1, tBot:bl.t0, blind:bl};
   var halfLen = (c.len > 0) ? c.len/2 : null;
-  return {ax:ax, p:p, halfLen:halfLen};
+  return {ax:ax, p:p, halfLen:halfLen,
+          tTop:(halfLen == null ? null :  halfLen),
+          tBot:(halfLen == null ? null : -halfLen)};
+}
+/* ============ v33.25：盲孔「深度」============
+   用户需求：贯穿体除了"打穿"，还要能只打一定深度（盲孔），底部有材料。
+   语义（对 c.hole 的贯穿体有效）：
+     depth = 0  → 贯穿（老行为，完全不变）
+     depth > 0  → 从 **+轴那一侧的孔口** 往里钻 depth 深
+     depth < 0  → 从 **-轴那一侧的孔口** 往里钻 |depth| 深
+   返回 {t0,t1,entT,botT,sign,depth}（t 都是"相对轴上一点 P"的轴坐标），
+   或 null（贯穿）。 */
+function cylMouthT(c, sgn){
+  /* 沿轴从孔心往 sgn 方向步进，找 insideCone 的零点 = 孔口在表面上的轴坐标 */
+  var ax = cylAxis(c).clone().normalize(), P = cylPoint(c);
+  var dir = ax.clone().multiplyScalar(sgn);
+  var lo = P.clone(), hi = null, t;
+  for(t = 0.5; t <= 400; t += 0.5){
+    var q = P.clone().addScaledVector(dir, t);
+    if(!insideCone(q)){ hi = q; break; }
+    lo = q;
+  }
+  if(!hi) return null;                       // 这个方向没穿出立体
+  for(var it=0; it<26; it++){
+    var mid = lo.clone().lerp(hi, 0.5);
+    if(insideCone(mid)) lo = mid; else hi = mid;
+  }
+  return lo.clone().sub(P).dot(ax);
+}
+function computeBlindWindow(c, depth){
+  var tA = cylMouthT(c, 1), tB = cylMouthT(c, -1);
+  if(tA == null || tB == null) return null;
+  var sgn = (depth > 0) ? 1 : -1;
+  var d = Math.abs(depth);
+  var t0, t1;
+  if(sgn > 0){ t1 = tA; t0 = tA - d; }        // 从 +轴孔口往里钻
+  else       { t0 = tB; t1 = tB + d; }        // 从 -轴孔口往里钻
+  /* 夹到立体内部（钻太深就等于钻穿了） */
+  var loM = Math.min(tA, tB), hiM = Math.max(tA, tB);
+  if(t0 < loM) t0 = loM;
+  if(t1 > hiM) t1 = hiM;
+  if(t1 - t0 < 0.01) return null;             // 太浅，当贯穿处理（画不出东西）
+  var entT = (sgn > 0) ? t1 : t0;
+  var botT = (sgn > 0) ? t0 : t1;
+  return {t0:t0, t1:t1, entT:entT, botT:botT, sign:sgn, depth:d};
+}
+/* 缓存：cylMargin 在 cellKeyAt 里会被调用上万次，不能每次都二分。
+   只在孔的几何参数真的变了时重算（数值比较，不拼字符串）。 */
+function cylBlind(c){
+  var d = c.depth || 0;
+  if(!(Math.abs(d) > 0.01)) return null;      // 贯穿：绝大多数情况，直接返回
+  var g = c._blSig;
+  if(g && g.d === d && g.t === c.type && g.a === c.ang && g.x === c.x && g.y === c.y &&
+     g.z === c.z && g.r === c.r && g.w === c.w && g.h === c.h && g.s === c.shape &&
+     g.f === flipped)
+    return c._blWin;
+  var win = computeBlindWindow(c, d);
+  c._blSig = {d:d, t:c.type, a:c.ang, x:c.x, y:c.y, z:c.z, r:c.r, w:c.w, h:c.h,
+              s:c.shape, f:flipped};
+  c._blWin = win;
+  return win;
 }
 function cylCodeAt(c, p){
   var mg = cylMargin(c, p);
@@ -1350,10 +1413,10 @@ function cylCodeAt(c, p){
   if(mg > -0.05) return null;                 // 恰在表面上
   /* 外部：定长时再按轴向分"正端外 / 负端外 / 两端之间" */
   var e = cylAxisExtent(c);
-  if(e.halfLen == null) return 0;             // 无限贯穿：只有"外部"一种
+  if(e.tTop == null) return 0;                // 无限贯穿：只有"外部"一种
   var t = p.clone().sub(e.p).dot(e.ax);       // 沿轴坐标
-  if(t >  e.halfLen) return 1;                // 正端之外
-  if(t < -e.halfLen) return 2;                // 负端之外
+  if(t > e.tTop) return 1;                    // 正端之外
+  if(t < e.tBot) return 2;                    // 负端之外
   return 0;                                   // 两端之间（从侧面出去）
 }
 /* 相贯体端面裁剪平面。约定与 cells 的 planes 一致：Plane(n, -d) 保留 n·p - d >= 0。
@@ -1362,9 +1425,9 @@ function cylCodeAt(c, p){
      "belowTop" → t <= +halfLen     "aboveBot" → t >= -halfLen   */
 function cylEndPlane(c, which){
   var e = cylAxisExtent(c);
-  if(e.halfLen == null) return null;
-  var cT = e.ax.dot(e.p) + e.halfLen;
-  var cB = e.ax.dot(e.p) - e.halfLen;
+  if(e.tTop == null) return null;
+  var cT = e.ax.dot(e.p) + e.tTop;
+  var cB = e.ax.dot(e.p) + e.tBot;
   if(which === "top")      return new THREE.Plane(e.ax.clone(), -cT);
   if(which === "bot")      return new THREE.Plane(e.ax.clone().negate(), cB);
   if(which === "belowTop") return new THREE.Plane(e.ax.clone().negate(), cT);
@@ -2198,6 +2261,8 @@ function buildCellVis(){
     }
   });
   scene.add(cellGroup);
+  /* v33.21：孔壁跟着分块走（每块的孔壁带自己的裁剪平面，隐藏这块时孔壁也没了） */
+  try{ buildBoreVis(); }catch(_){ }
   updatePickInfoText();
 }
 
@@ -2467,12 +2532,23 @@ function cylMargin(c, p){
   if(c.shape === "cyl") m = c.r - w.length();
   else { var B = cylBasis(a), hs = cutHalf(c); m = Math.min(hs.hw - Math.abs(w.dot(B.U)), hs.hh - Math.abs(w.dot(B.V))); }
   if(c.len > 0) m = Math.min(m, c.len/2 - Math.abs(axl));   // 定长：轴向也限制
+  /* v33.25 盲孔：窗口之外算"材料"（m 变负），这样分块/拾取/相贯线
+     和着色器用的是同一个判据，不会各说各话。 */
+  var bl = cylBlind(c);
+  if(bl){
+    if(axl > bl.t1) m = Math.min(m, bl.t1 - axl);
+    else if(axl < bl.t0) m = Math.min(m, axl - bl.t0);
+  }
   return m;
 }
 function cylLabel(c){
   var T = TYPES[c.type];
-  var nm = c.hole ? (HOLE_NAME[c.shape] || "贯穿孔") : (CUT_SHAPE_NAME[c.shape] || "圆柱");
+  var blind = c.hole && Math.abs(c.depth || 0) > 0.01;
+  var nm = c.hole ? (blind ? (HOLE_NAME[c.shape] || "孔").replace("贯穿", "盲")
+                           : (HOLE_NAME[c.shape] || "贯穿孔"))
+                  : (CUT_SHAPE_NAME[c.shape] || "圆柱");
   return nm + "·" + T.name + (T.hasAngle ? " " + Math.round(c.ang) + "°" : "") +
+    (blind ? "（深" + Math.round(Math.abs(c.depth)) + "）" : "") +
     (!c.hole && c.len > 0 ? "（高" + Math.round(c.len) + "）" : "");
 }
 /* 截面轮廓（世界坐标闭合点列）：圆 96 点；方/矩形按 2mm 取样 */
@@ -2521,7 +2597,7 @@ var CYL_GLSL = [
 "uniform vec4 uCylA[4];",   // xyz = 单位轴向量, w = +1 保留外部 / -1 保留内部 / 0 关闭
 "uniform vec4 uCylU[4];",   // xyz = 截面 U 方向, w = 半宽（>0 表示方/矩形）
 "uniform vec4 uCylV[4];",   // xyz = 截面 V 方向, w = 半高
-"uniform vec4 uCylL[4];",   // x = 定长（0 表示无限贯穿）
+"uniform vec4 uCylL[4];",   // x = 定长（0 表示无限贯穿）; y/z = 盲孔轴向窗口 [t0,t1]; w = 1 表示启用窗口
 "uniform vec4 uPartC[4];",  // xyz = 部件中心, w = 类型码（0 关闭）
 "uniform vec4 uPartQ[4];",  // 共轭四元数（把世界向量转回部件局部）
 "uniform vec4 uPartD[4];",  // 尺寸：含义随类型（见 partSpecOf）
@@ -2570,6 +2646,14 @@ var CYL_GLSL = [
 "        ins = (length(lat) <= uCylC[i].w);",
 "      }",
 "      if(uCylL[i].x > 0.0 && abs(axl) > uCylL[i].x * 0.5) ins = false;",
+"      /* v33.25 盲孔：把孔内限制在轴向窗口 [t0,t1] 里。",
+"         axl 是沿孔轴的坐标（相对轴上一点），窗口外的片元一律算材料，",
+"         于是孔只挖到 depth 深，剩下的材料留着 —— 这就是盲孔。",
+"         ★ 先把 uCylL[i] 整个取出来：直接在条件里链式取 .y/.z 时，",
+"           部分 GLSL 编译器会报 array index 相关错误，整个材质编译失败",
+"           → 孔壁整层消失（这条排查了很久）。 */",
+"      vec4 L4 = uCylL[i];",
+"      if(L4.w > 0.5 && (axl < L4.y || axl > L4.z)) ins = false;",
 "      if(k > 0.0){ if(ins) discard; } else { if(!ins) discard; }",
 "    }",
 "  }",
@@ -2605,7 +2689,7 @@ function cylUniformsOf(mat){
       "#include <clipping_planes_fragment>",
       "#include <clipping_planes_fragment>\n  cylDiscard();");
   };
-  mat.customProgramCacheKey = function(){ return "cylclip3"; };   // v33：着色器变了，缓存键必须跟着变
+  mat.customProgramCacheKey = function(){ return "cylclip4"; };   // v33.25：着色器变了，缓存键必须跟着变
   mat.needsUpdate = true;
   return u;
 }
@@ -2619,7 +2703,7 @@ function setCylSpecs(mat, specs){
       u.uCylA.value[i].set(s.a.x, s.a.y, s.a.z, s.keep);
       u.uCylU.value[i].set(s.u.x, s.u.y, s.u.z, s.hw);
       u.uCylV.value[i].set(s.v.x, s.v.y, s.v.z, s.hh);
-      u.uCylL.value[i].set(s.len || 0, 0, 0, 0);
+      u.uCylL.value[i].set(s.len || 0, s.bt0 || 0, s.bt1 || 0, s.bOn ? 1 : 0);
     } else {
       u.uCylC.value[i].set(0,0,0,0);
       u.uCylA.value[i].set(0,0,1,0);
@@ -2666,7 +2750,10 @@ function setPartSpecs(mat, specs){
 }
 function cylSpecOf(c, keep){
   var a = cylAxis(c), B = cylBasis(a), hs = cutHalf(c);
-  return {a:a, p:cylPoint(c), r:c.r, keep:keep, u:B.U, v:B.V, hw:hs.hw, hh:hs.hh, len:(c.len||0)};
+  /* v33.25：盲孔要把轴向窗口一起带进着色器，否则孔还是挖穿的 */
+  var bl = c.hole ? cylBlind(c) : null;
+  return {a:a, p:cylPoint(c), r:c.r, keep:keep, u:B.U, v:B.V, hw:hs.hw, hh:hs.hh, len:(c.len||0),
+          bt0: bl ? bl.t0 : 0, bt1: bl ? bl.t1 : 0, bOn: bl ? 1 : 0};
 }
 
 /* 抓取：算"射线到截面轮廓的最短距离"（比精确命中网格宽松得多，触屏才抓得住） */
@@ -2732,6 +2819,408 @@ function cylRegionHidden(c){
 }
 /* ---- 贯穿体可视化：一律 depthTest:false，保证任何角度都看得见 ---- */
 function bodyLen(c){ return c.len > 0 ? c.len : 96; }   // 无限贯穿时也画一段实体，视觉上就"贯穿"了
+
+/* ============ 孔壁：贯穿孔的内表面（v33.21 引入，v33.24 重写）============
+   打孔（c.hole）**只在着色器里 discard 掉孔内的片元**，本身没有几何。
+   不给孔壁的话，从孔口往里看到的是圆柱自己的 BackSide 深色壳（0x4b2a14），
+   看着就像"里面被掏空了"（用户 v33.21 的原话：「圆柱内部变成中空」）。
+
+   ★ 孔壁属于**材料**，所以它跟主立体一样要参与分块裁剪：
+     点选模式里每块的孔壁都带上那一块自己的 clippingPlanes + 相贯体规格，
+     这样隐藏某一块时，切口处的孔壁还在，不会又变成"中空"。
+
+   几何生成方式见下面的 v33.24 说明（逐母线求交，不是逐三角形过滤）。 */
+var boreGroup = null;
+var BORE_COLOR = 0xdd7a34;      // 与封盖同色（都是被切出来的材料表面）
+function boreSpan(){
+  /* 孔壁要比主立体在孔轴方向上的跨度更长，才能保证两端都穿出立体。
+     取主立体包围盒对角线，够用且不过分（太长会让三角形跨度变大、过滤变粗）。 */
+  var S = SHAPES[shape];
+  if(S.lab) return 260;                                   // 实验室没有主立体，给一个够长的跨度
+  if(!geo || !geo.attributes || !geo.attributes.position || !geo.attributes.position.count) return 260;
+  if(!geo.boundingBox) geo.computeBoundingBox();
+  var d = geo.boundingBox.max.clone().sub(geo.boundingBox.min);
+  return Math.max(d.x, d.y, d.z) * 2 + 20;
+}
+/* ============ 孔壁：贯穿孔的内表面（v33.24 重写）============
+   v33.21/22/23 的做法是：先铺一整根"无限长圆筒"，再**按三角形**判断
+   "这段周围有没有材料"，没有就整块丢掉、有顶点越界就沿**径向**把它拉回来。
+   这条路走不通，会留下两个用户能直接看到的毛病：
+
+   ① 「贯穿完之后，圆柱表面多出两圈颜色变深」
+      逐三角形丢弃是"整块"的，在孔口/孔底与表面相交处，
+      只要三角形的质心探针判到体外，整个三角形就没了 →
+      孔壁在孔口处**没接到表面上**，留一圈真实缺口。
+      实测缺口：cyl 水平孔 3.00mm、正平面孔 2.00mm、平放圆柱 2.00mm。
+      缺口里透出的是圆柱自己的 BackSide 深棕壳（#4b2a14）——
+      用户看到的就是孔口那一圈"颜色变深"。
+
+   ② 「内部像是没有涂匀颜色一样」
+      收边是沿**径向**（离开孔轴的方向）拉的。孔壁越界只发生在**轴向两端**，
+      沿径向拉等于把半径改小 → 孔口被收成锥形，边界参差不齐；
+      再加上 MeshBasicMaterial 完全不受光、只有一条轴向顶点色渐变，
+      孔壁就成了一块"平色贴纸"，和受光的橙色外表面明显不是一种东西。
+
+   现在改成**逐母线求交**：
+     · 母线 = 一条直线（圆柱孔取一圈径向母线；方孔取 4 个面内的一组母线）；
+     · 每条母线用 insideCone 二分求出它在立体内的轴向区间 [t0,t1]；
+     · 母线顶点按 t0..t1 均匀铺开 —— 端点**精确落在立体表面上**。
+   于是孔壁边界 = 孔轴曲面 ∩ 立体表面，严丝合缝，既不缺口也不戳出。
+
+   材质也换回**受光**：v33.21 的 `BackSide + Lambert` 全黑的真正原因不是
+   "Lambert 不能用"，而是 three.js **不会为 BackSide 翻转法线** ——
+   片元法线还是几何的 +径向（朝材料外），从孔里看自然全是背光面。
+   正确解法是让**几何本身**的法线朝孔内：把三角形绕序反过来 + FrontSide。
+   这样孔壁有正常的明暗层次，不再是平色贴纸；
+   孔壁的外侧（埋在材料里那一面）被剔除，物理上也本来就看不见。 */
+
+/* 一条直线（origin + dir*s）落在立体内部的参数区间 [s0,s1]。
+   立体是凸的，所以区间唯一；整条都在体外（孔从侧面擦出去）→ null。 */
+function boreLineSpan(o, dir, L, win){
+  var step = L/120, s0 = null, s1 = null, prev = null, prevS = 0;
+  var q = new THREE.Vector3();
+  for(var s = -L/2; s <= L/2 + 1e-9; s += step){
+    q.copy(o).addScaledVector(dir, s);
+    var ins = insideCone(q);
+    if(prev === null){ prev = ins; prevS = s; continue; }
+    if(ins !== prev){
+      var l = prevS, h = s;
+      for(var it=0; it<26; it++){
+        var mid = (l+h)*0.5;
+        q.copy(o).addScaledVector(dir, mid);
+        if(insideCone(q) === prev) l = mid; else h = mid;
+      }
+      var edge = (l+h)*0.5;
+      if(ins) s0 = edge; else s1 = edge;
+    }
+    prev = ins; prevS = s;
+  }
+  if(s0 === null || s1 === null) return null;
+  /* v33.25 盲孔：把区间夹到深度窗口里。窗口外的部分是**材料**，
+     孔壁不该长过去 —— 这样孔就只到 depth 深，孔底再补一片封盖。 */
+  if(win){
+    s0 = Math.max(s0, win.t0);
+    s1 = Math.min(s1, win.t1);
+  }
+  if(s1 - s0 < 1e-3) return null;
+  /* 端点就是"母线 ∩ 立体表面"的精确交点，不多伸也不少留。
+     （曾试过两端各外扩 0.25mm 去盖亚像素接缝，实测会把孔壁顶出表面 0.25mm，
+       形成一圈微小的唇边，反而不如精确贴合干净 —— 见 v33.24 交接文档。） */
+  return [s0, s1];
+}
+
+/* 由"母线 × 轴向段"的规则网格生成孔壁几何。
+   rows[i] = {o:母线起点, d:单位方向, span:[s0,s1]}；
+   三角形绕序 (i,j) → (i,j+1) → (i+1,j) 让法线朝**孔内**
+   （推导：(Δs·d) × (Δw·W) = ΔsΔw·(d×W)，d=ax、W=径向 → ax×W = -径向，朝内）。
+   closed=true 表示首尾母线相接（圆孔）。 */
+function boreSheetGeo(rows, hSeg, closed, ax, P){
+  var n = rows.length, i, j;
+  var spans = [], any = false, smin = 1e9, smax = -1e9;
+  for(i=0;i<n;i++){
+    var sp = rows[i].span;
+    spans.push(sp);
+    if(!sp) continue;
+    any = true;
+    if(sp[0] < smin) smin = sp[0];
+    if(sp[1] > smax) smax = sp[1];
+  }
+  if(!any) return null;
+  var span = Math.max(1e-6, smax - smin);
+  var verts = [], cols = [], idx = [], start = [];
+  var p = new THREE.Vector3();
+  for(i=0;i<n;i++){
+    start.push(verts.length/3);
+    var sp2 = spans[i];
+    if(!sp2){                                  // 这条母线整条在体外 → 占位，不索引
+      for(j=0;j<=hSeg;j++){ verts.push(0,0,0); cols.push(1,1,1); }
+      continue;
+    }
+    for(j=0;j<=hSeg;j++){
+      var s = sp2[0] + (sp2[1]-sp2[0])*(j/hSeg);
+      p.copy(rows[i].o).addScaledVector(rows[i].d, s);
+      verts.push(p.x, p.y, p.z);
+      /* 轴向极轻微暗化（0.94~1.0）：只给孔道一点纵深感。
+         v33.23 的 0.5~1.0 太猛 —— 整圈筒壁比材料表面暗一大截，
+         用户看到的就是"内部像没涂匀颜色"。
+         现在孔壁是受光的 Lambert，明暗主要由光照给出；
+         顶点色只做很淡的补充，不能抢戏。
+         按**整根孔**归一化（不是按单条母线），否则点选模式里同一根孔
+         被切成多块时每块的明暗范围都不一样（同样会显得"涂不匀"）。 */
+      var f = (s - smin)/span;
+      var shade = 1 - 0.06*Math.abs(f-0.5)*2;
+      cols.push(shade, shade, shade);
+    }
+  }
+  /* 绕序决定法线朝向。U/V 基的**手性**取决于孔轴朝向（cylBasis 对不同轴给出的
+     U/V 有左有右），所以不能写死，必须按实际几何判一次：
+     取第一个有效四边形，算它的法线 n 与"离开孔轴"的径向 rad，
+     n·rad > 0 说明朝外 → 把两个三角形的绕序一起反过来。 */
+  var flip = false;
+  for(i=0;i<n && !flip;i++){
+    var i1q = (i+1)%n;
+    if(!spans[i] || !spans[i1q]) continue;
+    var q0 = start[i], q1 = start[i1q];
+    var A0 = new THREE.Vector3(verts[q0*3], verts[q0*3+1], verts[q0*3+2]);
+    var A1 = new THREE.Vector3(verts[(q0+1)*3], verts[(q0+1)*3+1], verts[(q0+1)*3+2]);
+    var B0 = new THREE.Vector3(verts[q1*3], verts[q1*3+1], verts[q1*3+2]);
+    var nrm = A1.clone().sub(A0).cross(B0.clone().sub(A0));
+    if(nrm.lengthSq() < 1e-12) continue;
+    nrm.normalize();
+    var cen2 = A0.clone().add(A1).add(B0).multiplyScalar(1/3).sub(P);
+    cen2.addScaledVector(ax, -cen2.dot(ax));
+    if(cen2.lengthSq() < 1e-9) continue;
+    cen2.normalize();
+    flip = (nrm.dot(cen2) > 0);
+  }
+  var last = closed ? n : n-1;
+  for(i=0;i<last;i++){
+    var i1 = (i+1)%n;
+    if(!spans[i] || !spans[i1]) continue;
+    var a0 = start[i], a1 = start[i1];
+    for(j=0;j<hSeg;j++){
+      if(flip){
+        idx.push(a0+j, a1+j, a0+j+1);
+        idx.push(a0+j+1, a1+j, a1+j+1);
+      } else {
+        idx.push(a0+j, a0+j+1, a1+j);
+        idx.push(a0+j+1, a1+j+1, a1+j);
+      }
+    }
+  }
+  if(!idx.length) return null;
+  var g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(verts), 3));
+  g.setAttribute("color", new THREE.BufferAttribute(new Float32Array(cols), 3));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  g.computeBoundingSphere();   // ★ 见下面封盖处的说明：别让视锥剔除误判
+  return g;
+}
+
+/* 圆柱孔：一圈径向母线 */
+function boreCylSheet(ax, P, L, r, win){
+  var B = cylBasis(ax), N = 96;
+  var hSeg = Math.max(10, Math.min(72, Math.round(L/3)));
+  var rows = [], i;
+  for(i=0;i<N;i++){
+    var th = i/N*Math.PI*2;
+    var u = B.U.clone().multiplyScalar(Math.cos(th)).addScaledVector(B.V, Math.sin(th));
+    var o = P.clone().addScaledVector(u, r);
+    rows.push({o:o, d:ax.clone(), span:boreLineSpan(o, ax, L, win)});
+  }
+  return boreSheetGeo(rows, hSeg, true, ax, P);
+}
+
+/* 方 / 矩形孔：4 个面，每个面沿"面内宽度方向"铺一组母线 */
+function boreBoxSheet(ax, P, L, A2, C2, hSeg, win){
+  var B = cylBasis(ax);
+  var q0 = P.clone().addScaledVector(B.U, A2[0]).addScaledVector(B.V, A2[1]);
+  var q1 = P.clone().addScaledVector(B.U, C2[0]).addScaledVector(B.V, C2[1]);
+  var dirW = q1.clone().sub(q0), width = dirW.length();
+  if(width < 1e-6) return null;
+  dirW.normalize();
+  var nW = Math.max(4, Math.min(48, Math.round(width/2)));
+  var rows = [], i;
+  for(i=0;i<=nW;i++){
+    var o = q0.clone().addScaledVector(dirW, width*i/nW);
+    rows.push({o:o, d:ax.clone(), span:boreLineSpan(o, ax, L, win)});
+  }
+  return boreSheetGeo(rows, hSeg, false, ax, P);
+}
+
+/* ============ 孔底封盖（v33.25 盲孔）============
+   盲孔钻到 depth 深就停了，底面是**材料**。没有这片盖子的话，
+   从孔口望进去会直接看穿到圆柱的内壁/背景，又变回"中空"。
+   盖子的法线朝**孔内**（朝孔口方向），所以从孔口看是受光的正面。
+   圆心落在孔的轴线上、沿轴位置 = 窗口的"底"那一端。 */
+function boreCapGeo(c, ax, P, win){
+  var B = cylBasis(ax);
+  var tBot = (win.sign > 0) ? win.t0 : win.t1;      // 底面所在轴坐标
+  var cen = P.clone().addScaledVector(ax, tBot);
+  var pos = [], idx = [], i;
+  if(c.shape === "cyl"){
+    var N = 96;
+    pos.push(cen.x, cen.y, cen.z);
+    for(i=0;i<N;i++){
+      var th = i/N*Math.PI*2;
+      var u = B.U.clone().multiplyScalar(Math.cos(th)*c.r)
+                   .addScaledVector(B.V, Math.sin(th)*c.r);
+      var q = cen.clone().add(u);
+      pos.push(q.x, q.y, q.z);
+    }
+    /* 绕序：法线要朝孔口方向 = +sign*ax。
+       圆心→圆周i→圆周i+1 的绕序给出 +ax 方向，sign<0 时整体反过来。 */
+    for(i=0;i<N;i++){
+      var a = 1 + i, b = 1 + (i+1)%N;
+      if(win.sign > 0) idx.push(0, a, b);
+      else             idx.push(0, b, a);
+    }
+  } else {
+    var hs = cutHalf(c);
+    var cs = [[-hs.hw,-hs.hh],[hs.hw,-hs.hh],[hs.hw,hs.hh],[-hs.hw,hs.hh]];
+    /* 两个三角形拼成矩形，绕序同样按 sign 定 */
+    var corners = cs.map(function(A2){
+      return cen.clone().addScaledVector(B.U, A2[0]).addScaledVector(B.V, A2[1]);
+    });
+    var order = (win.sign > 0) ? [0,1,2, 0,2,3] : [0,2,1, 0,3,2];
+    order.forEach(function(ci){
+      var q2 = corners[ci];
+      pos.push(q2.x, q2.y, q2.z);
+    });
+    idx = null;   // 非索引几何
+  }
+  var g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(pos), 3));
+  /* 孔底封盖和孔壁共用 boreMat（vertexColors:true），
+     没有 color 属性的话顶点色是未定义值 —— 实测整片发黑。
+     封盖是孔底、本来就该比孔壁略暗，给一个统一的 0.88。 */
+  var nCol = pos.length/3, cols = new Float32Array(nCol*3);
+  for(i=0;i<nCol;i++){ cols[i*3] = cols[i*3+1] = cols[i*3+2] = 0.88; }
+  g.setAttribute("color", new THREE.BufferAttribute(cols, 3));
+  if(idx) g.setIndex(idx);
+  g.computeVertexNormals();
+  /* ★ 必须自己算包围球：three.js 的包围球是**渲染时惰性计算**的，
+     而 Frustum 剔除判定发生在它还是 null 的时候 —— 结果是整块封盖
+     被当成"不在视锥内"直接跳过，屏幕上永远看不到孔底（这条排查了很久）。 */
+  g.computeBoundingSphere();
+  return g;
+}
+
+/* 孔壁几何只跟孔本身有关，跟"分到哪一块"无关 → 缓存起来。
+   点选模式下同一个孔会被好几块各要一次，不缓存就重复算 N 遍。 */
+var boreGeoCache = {};
+function boreGeoOf(c){
+  var sig = [shape, flipped?1:0, c.shape, c.type, c.ang, c.x, c.y, c.z, c.r, c.w, c.h,
+             c.len, c.depth || 0].join("|");
+  var hit = boreGeoCache[c._id];
+  if(hit && hit.sig === sig) return hit.geos;
+  if(hit){ hit.geos.forEach(function(g){ g.dispose(); }); }
+  var ax = cylAxis(c).clone().normalize(), P = cylPoint(c), L = boreSpan();
+  var bl = cylBlind(c);
+  /* 窗口用"相对 P 的轴坐标"，正好与 boreLineSpan 的 s 同一套坐标 */
+  var win = bl ? {t0:bl.t0, t1:bl.t1, sign:bl.sign} : null;
+  var geos = [];
+  if(c.shape === "cyl"){
+    var g = boreCylSheet(ax, P, L, c.r, win);
+    if(g) geos.push(g);
+  } else {
+    var hs = cutHalf(c);
+    var hSeg = Math.max(10, Math.min(72, Math.round(L/3)));
+    var corners = [[-hs.hw,-hs.hh],[hs.hw,-hs.hh],[hs.hw,hs.hh],[-hs.hw,hs.hh]];
+    for(var k=0;k<4;k++){
+      var g2 = boreBoxSheet(ax, P, L, corners[k], corners[(k+1)%4], hSeg, win);
+      if(g2) geos.push(g2);
+    }
+  }
+  if(win){
+    var cap = boreCapGeo(c, ax, P, win);
+    if(cap) geos.push(cap);
+  }
+  boreGeoCache[c._id] = {sig:sig, geos:geos};
+  return geos;
+}
+function boreGeoCacheClear(){
+  Object.keys(boreGeoCache).forEach(function(k){
+    boreGeoCache[k].geos.forEach(function(g){ g.dispose(); });
+  });
+  boreGeoCache = {};
+}
+/* 贯穿体被删掉后，它的孔壁几何留在缓存里会一直占显存 → 定期回收。 */
+function boreGeoCacheGc(){
+  var live = {};
+  cyls.forEach(function(c){ if(c._id != null) live[c._id] = 1; });
+  Object.keys(boreGeoCache).forEach(function(k){
+    if(live[k]) return;
+    boreGeoCache[k].geos.forEach(function(g){ g.dispose(); });
+    delete boreGeoCache[k];
+  });
+}
+
+function boreMat(){
+  /* 受光 + DoubleSide + 几何法线朝孔内（绕序决定，见 boreSheetGeo）。
+     v33.22 的 MeshBasicMaterial 只是把"法线朝外"的症状盖住了；
+     真正的解法是让几何法线朝孔内，这样 Lambert 才有正确的明暗层次。
+
+     为什么还必须 DoubleSide：孔壁是一层**零厚度**的曲面。
+     从孔口往里看看到的是内侧面（正面）；从**另一头**的孔口看过来看到的是外侧面 ——
+     单面渲染会把后者整片剔掉，那个孔口又露出圆柱自己的 BackSide 深棕壳
+     （#4b2a14），就是"贯穿完之后表面多出两圈颜色变深"里的出口那一圈。
+     DoubleSide 在着色器里会按 faceDirection 翻转法线（three.js 的
+     normal_fragment_begin：`#ifdef DOUBLE_SIDED normal *= faceDirection`），
+     所以两侧都能得到正确的明暗 —— 这一点跟 BackSide **不翻转**正好相反。 */
+  return new THREE.MeshLambertMaterial({color:BORE_COLOR, side:THREE.DoubleSide,
+    vertexColors:true,
+    /* 一点自发光把孔壁的背光面托起来。
+       孔壁的法线朝孔内，越靠近孔口那圈越接近"背光"，纯 Lambert 会压到
+       几乎全黑（实测 #5a3016），远看又是一道"颜色变深"的月牙。
+       自发光只是把下限抬高，不参与明暗计算，所以不会把孔壁变成平色贴纸。 */
+    emissive:new THREE.Color(0x2e1c0d)});
+}
+
+/* 除自己以外、其余贯穿体对本材质的裁剪规格（自己那个孔必须跳过：
+   孔壁正好落在 r 上，若再套自己的 keep=+1 会因浮点误差被整片 discard） */
+function boreSpecsExcept(acs, ownIdx, inter){
+  var out = [];
+  for(var i=0; i<acs.length; i++){
+    if(i === ownIdx){ out.push(null); continue; }
+    var c = acs[i];
+    if(inter) out.push(cylSpecOf(c, c.hole ? 1 : -1));
+    else      out.push(c.hole ? cylSpecOf(c, 1) : null);
+  }
+  return out;
+}
+function buildBoreVis(){
+  /* ★ 孔壁几何是 boreGeoCache 里的共享对象，不能在这里 dispose ——
+     否则下一帧同一份 geometry 已经被释放，会出现"孔壁时有时无"。
+     只回收材质（每个网格一份，本来就不共享）。 */
+  if(boreGroup){
+    scene.remove(boreGroup);
+    boreGroup.traverse(function(ch){ if(ch.material) ch.material.dispose(); });
+    boreGroup = null;
+  }
+  boreGeoCacheGc();
+  var acs = activeCyls(), holes = [], i;
+  for(i=0; i<acs.length; i++) if(acs[i].hole) holes.push(i);
+  if(!holes.length) return;
+  var grp = new THREE.Group();
+  var addWall = function(c, planes, specs, partSpecs, ro){
+    var gs = boreGeoOf(c);
+    for(var k=0; k<gs.length; k++){
+      var mt = boreMat();
+      if(planes && planes.length){ mt.clippingPlanes = planes; mt.clipIntersection = false; }
+      setCylSpecs(mt, specs || []);
+      setPartSpecs(mt, partSpecs || []);
+      var m = new THREE.Mesh(gs[k], mt);
+      m.userData.bore = true;
+      m.renderOrder = ro;
+      grp.add(m);
+    }
+  };
+  if(mode === "pick"){
+    /* 点选模式：孔壁只画在"材料块"里（keep>=0 的那侧），并且跟着那一块走 */
+    cells.forEach(function(cell){
+      if(cell.sel === false) return;              // 这块被隐藏了 → 它的孔壁也不该留
+      if(cell.ownerPart != null) return;          // 部件内部的块不含主立体的孔壁
+      for(var h=0; h<holes.length; h++){
+        var m = holes[h];
+        var sp = (cell.cyls && cell.cyls[m]) ? cell.cyls[m] : null;
+        if(sp && sp.keep < 0) continue;           // 这块就是孔里那一块 → 不画孔壁
+        var specs = (cell.cyls || []).slice(0, acs.length);
+        specs[m] = null;
+        var ps = (cell.parts || []).slice();
+        if(cell.ownerPart != null) ps[cell.ownerPart] = null;
+        addWall(acs[m], cell.planes, specs, ps, 1011);
+      }
+    });
+  } else {
+    var planes = (matFront.clippingPlanes || []).slice();
+    for(var h2=0; h2<holes.length; h2++){
+      addWall(acs[holes[h2]], planes, boreSpecsExcept(acs, holes[h2], mode === "inter"), [], 1);
+    }
+  }
+  if(grp.children.length){ boreGroup = grp; scene.add(grp); }
+}
 
 /* ---- 主立体的"到表面"有符号函数：>0 体外、<0 体内、0 在表面上 ----
    （相贯线 = 相贯体表面 与 主立体表面 的交线，用这个函数找零点） */
@@ -4949,7 +5438,7 @@ function addCyl(type){
   // 位置一律从立体中心开始（默认就摆在中间）
   var side = Math.max(10, Math.round(R*0.95));
   var c = { shape:cutShape, type:type, ang:d.ang, x:0, y:0, z:0, on:true, open:true,
-            hole:cutHole, len:cutHole ? 0 : 90 };
+            hole:cutHole, len:cutHole ? 0 : 90, depth:0 };
   if(cutShape === "cyl"){ c.r = Math.max(6, Math.round(R*0.42)); }
   else if(cutShape === "sq"){ c.w = side; c.h = side; if(!c.hole) c.len = side; }
   else { c.w = Math.max(14, Math.round(R*1.15)); c.h = Math.max(8, Math.round(R*0.7)); }
@@ -5000,8 +5489,10 @@ function renderCylList(){
       '<div class="fld"><span>高低</span><input type="number" step="1" class="cy" value="' + c.y + '"></div>' +
       '<div class="fld"><span>前后</span><input type="number" step="1" class="cz" value="' + c.z + '"></div>' +
       sizeFields +
-      (c.shape === "sq" || c.hole ? '' :
-        '<div class="fld"><span>高</span><input type="number" step="1" min="0" class="cl" value="' + (c.len||0) + '"><span>0=无限</span></div>') +
+      (c.hole
+        ? '<div class="fld"><span>深度</span><input type="number" step="1" class="cd" value="' + (c.depth||0) + '"><span>0=打穿</span></div>'
+        : (c.shape === "sq" ? '' :
+          '<div class="fld"><span>高</span><input type="number" step="1" min="0" class="cl" value="' + (c.len||0) + '"><span>0=无限</span></div>')) +
       '</div>';
     card.appendChild(edit);
     cylsEl.appendChild(card);
@@ -5012,7 +5503,8 @@ function renderCylList(){
     var holeCb = head.querySelector(".hole");
     if(holeCb) holeCb.addEventListener("change", function(ev){
       c.hole = ev.target.checked;
-      if(c.hole) c.len = 0; else if(!(c.len > 0)) c.len = (c.shape === "sq" ? c.w : 90);
+      if(c.hole){ c.len = 0; } else { c.depth = 0; if(!(c.len > 0)) c.len = (c.shape === "sq" ? c.w : 90); }
+      c._blSig = null; c._blWin = null;
       renderCylList(); refresh();
     });
     head.querySelector(".x").addEventListener("click", function(){
@@ -5025,18 +5517,18 @@ function renderCylList(){
     var angInp = edit.querySelector(".ang");
     if(angInp) angInp.addEventListener("input", function(ev){
       var v = parseFloat(ev.target.value);
-      if(isFinite(v)){ c.ang = v; buildCylVis(); applyClipping(); if(mode==="pick") cellsDirty = true; }
+      if(isFinite(v)){ c.ang = v; buildCylVis(); applyClipping(); try{ buildBoreVis(); }catch(_){ } if(mode==="pick") cellsDirty = true; }
     });
     [[".cx","x"],[".cy","y"],[".cz","z"]].forEach(function(pair){
       edit.querySelector(pair[0]).addEventListener("input", function(ev){
         var v = parseFloat(ev.target.value);
-        if(isFinite(v)){ c[pair[1]] = v; buildCylVis(); applyClipping(); if(mode==="pick") cellsDirty = true; }
+        if(isFinite(v)){ c[pair[1]] = v; buildCylVis(); applyClipping(); try{ buildBoreVis(); }catch(_){ } if(mode==="pick") cellsDirty = true; }
       });
     });
     var crInp = edit.querySelector(".cr");
     if(crInp) crInp.addEventListener("input", function(ev){
       var v = parseFloat(ev.target.value);
-      if(isFinite(v) && v > 0.5){ c.r = v; buildCylVis(); applyClipping(); if(mode==="pick") cellsDirty = true; }
+      if(isFinite(v) && v > 0.5){ c.r = v; buildCylVis(); applyClipping(); try{ buildBoreVis(); }catch(_){ } if(mode==="pick") cellsDirty = true; }
     });
     var cwInp = edit.querySelector(".cw");
     if(cwInp) cwInp.addEventListener("input", function(ev){
@@ -5044,18 +5536,29 @@ function renderCylList(){
       if(isFinite(v) && v > 0.5){
         c.w = v;
         if(c.shape === "sq"){ c.h = v; c.len = v; }
-        buildCylVis(); applyClipping(); if(mode==="pick") cellsDirty = true;
+        buildCylVis(); applyClipping(); try{ buildBoreVis(); }catch(_){ } if(mode==="pick") cellsDirty = true;
       }
     });
     var chInp = edit.querySelector(".ch");
     if(chInp) chInp.addEventListener("input", function(ev){
       var v = parseFloat(ev.target.value);
-      if(isFinite(v) && v > 0.5){ c.h = v; buildCylVis(); applyClipping(); if(mode==="pick") cellsDirty = true; }
+      if(isFinite(v) && v > 0.5){ c.h = v; buildCylVis(); applyClipping(); try{ buildBoreVis(); }catch(_){ } if(mode==="pick") cellsDirty = true; }
     });
     var clInp = edit.querySelector(".cl");
     if(clInp) clInp.addEventListener("input", function(ev){
       var v = parseFloat(ev.target.value);
-      if(isFinite(v) && v >= 0){ c.len = v; buildCylVis(); applyClipping(); if(mode==="pick") cellsDirty = true; }
+      if(isFinite(v) && v >= 0){ c.len = v; buildCylVis(); applyClipping(); try{ buildBoreVis(); }catch(_){ } if(mode==="pick") cellsDirty = true; }
+    });
+    /* v33.25「深度」：0 = 打穿；>0 = 从 +轴孔口往里钻；<0 = 从 -轴孔口往里钻 */
+    var cdInp = edit.querySelector(".cd");
+    if(cdInp) cdInp.addEventListener("input", function(ev){
+      var v = parseFloat(ev.target.value);
+      if(isFinite(v)){
+        c.depth = v;
+        c._blSig = null; c._blWin = null;          // 深度变了 → 重算轴向窗口
+        buildCylVis(); applyClipping(); try{ buildBoreVis(); }catch(_){ }
+        if(mode === "pick") cellsDirty = true;
+      }
     });
   });
 }
@@ -5271,6 +5774,8 @@ function refresh(){
   applyClipping();
   rebuildCells();
   buildCellVis();
+  /* v33.21：非点选模式下 buildCellVis 会提前 return，孔壁要在这里单独建 */
+  try{ buildBoreVis(); }catch(_){ }
   cellsDirty = false;
   updateHint();
   updatePickInfoText();

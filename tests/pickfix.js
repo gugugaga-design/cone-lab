@@ -567,6 +567,400 @@ check("estimateSampleSpacing 单次 < 5ms（拖动每帧都会调）",
       spacingPerf.ms < 5, spacingPerf.ms + "ms / " + spacingPerf.n + " 点");
 
 console.log("\n=========================================");
+/* ---------- 15. 贯穿打孔必须生成孔壁（否则"内部中空"） ---------- */
+section("15. 贯穿打孔要画出孔壁（v33.21：用户反馈「用贯穿圆后圆柱内部变成中空」）");
+
+/* 用户原话："在圆柱上用贯穿圆后，圆柱内部变成中空" —— 中空 = 能从被挖掉的那部分
+   直接看到内部。根因：打孔只在着色器里 discard 掉孔内片元，**从来没生成孔壁几何**，
+   于是从孔口看进去看到的是圆柱自己的 BackSide 深色壳（0x4b2a14），像被掏空了。 */
+
+const boreBasic = app.run(`(function(){
+  applyShape('cyl');
+  parts.length = 0; cyls.length = 0; faces.length = 0; pickSel = {};
+  cutShape = 'cyl'; cutHole = true;
+  addCyl('horiz');
+  (function(c){ c.r = 10; c.len = 0; c.hole = true; c.y = 0; c.on = true; })(cyls[0]);
+  renderCylList(); mode = 'all'; refresh();
+  var n = (typeof boreGroup !== 'undefined' && boreGroup) ? boreGroup.children.length : -1;
+  var mats = [];
+  if(boreGroup) boreGroup.children.forEach(function(m){
+    mats.push({side:m.material.side, color:m.material.color.getHexString(),
+               type:m.material.type, vertexColors:m.material.vertexColors,
+               verts:m.geometry.attributes.position.count});
+  });
+  return {n:n, mats:mats};
+})()`);
+console.log("    " + JSON.stringify(boreBasic));
+check("打孔后生成了孔壁网格", boreBasic.n > 0, "boreMesh=" + boreBasic.n);
+
+/* v33.24：孔壁改成**受光 + FrontSide + 几何法线朝孔内**。
+   v33.22 之所以退回 MeshBasicMaterial，是因为 v33.21 用 BackSide + Lambert
+   但 three.js **不翻转 BackSide 的法线** → 整圈筒壁都算成背光面 → 压到最暗
+   （实测 #4c2915），看着还是"空腔"。
+   真正的问题是**几何法线朝外**，所以 v33.24 把三角形绕序反过来，
+   法线自然朝孔内，Lambert 就能算出正确的明暗层次，不用再牺牲光照。 */
+check("孔壁受光（Lambert，有明暗层次，不是平色贴纸）",
+      boreBasic.mats.length > 0 && boreBasic.mats.every(function(m){
+        return m.type === "MeshLambertMaterial"; }),
+      JSON.stringify(boreBasic.mats.map(function(m){ return m.type; })));
+/* 孔壁是零厚度曲面：从孔口往里看是内侧面，从另一头看是外侧面，
+   单面渲染会把后者剔掉 → 出口那圈又露出深棕背壳（"表面多出两圈变深"）。
+   所以必须 DoubleSide；DoubleSide 在着色器里按 faceDirection 翻转法线，
+   两侧都有正确明暗（与 BackSide 不翻转不同）。 */
+check("孔壁用 DoubleSide（两端的孔口都要能看见筒壁）",
+      boreBasic.mats.length > 0 && boreBasic.mats.every(function(m){ return m.side === 2; }),
+      JSON.stringify(boreBasic.mats.map(function(m){ return m.side; })));
+check("孔壁本体带顶点色（沿孔轴极轻微暗化，只作纵深补充，不压暗整体）",
+      boreBasic.mats.length > 0 &&
+      boreBasic.mats.every(function(m){ return m.vertexColors === true; }),
+      JSON.stringify(boreBasic.mats.map(function(m){ return {vc:m.vertexColors}; })));
+check("孔壁几何沿轴分段（顶点数 > 100，才能贴合截面变化的立体）",
+      boreBasic.mats.length > 0 && boreBasic.mats[0].verts > 100,
+      boreBasic.mats.length ? boreBasic.mats[0].verts : "none");
+
+/* 截面变化的立体最容易漏孔壁：整根轴只有一个高度段时，三角形会跨满整根轴，
+   只要有一小截穿出立体就整片被丢掉 → 孔壁全没了。 */
+const boreShapes = app.run(`(function(){
+  var out = {};
+  ['cyl','cone','frustum5','prism5','pyr3','hemi','cylz'].forEach(function(sp){
+    applyShape(sp);
+    parts.length = 0; cyls.length = 0; faces.length = 0; pickSel = {};
+    cutShape = 'cyl'; cutHole = true;
+    addCyl('horiz');
+    (function(c){ c.r = 8; c.len = 0; c.hole = true; c.y = 0; c.on = true; })(cyls[0]);
+    renderCylList(); mode = 'all'; refresh();
+    out[sp] = (typeof boreGroup !== 'undefined' && boreGroup) ? boreGroup.children.length : -1;
+  });
+  return out;
+})()`);
+console.log("    " + JSON.stringify(boreShapes));
+check("圆柱/圆锥/五棱台/五棱柱/正三棱锥/半球/平放圆柱 都有孔壁",
+      Object.keys(boreShapes).every(function(k){ return boreShapes[k] > 0; }),
+      JSON.stringify(boreShapes));
+
+/* 方孔要有 4 面内壁 */
+const boreSq = app.run(`(function(){
+  applyShape('cyl');
+  parts.length = 0; cyls.length = 0; faces.length = 0; pickSel = {};
+  cutShape = 'sq'; cutHole = true;
+  addCyl('horiz');
+  (function(c){ c.w = 18; c.h = 18; c.len = 0; c.hole = true; c.on = true; })(cyls[0]);
+  renderCylList(); mode = 'all'; refresh();
+  return (typeof boreGroup !== 'undefined' && boreGroup) ? boreGroup.children.length : -1;
+})()`);
+check("方孔生成 4 面内壁", boreSq === 4, "boreMesh=" + boreSq);
+
+/* 实体相贯（不勾「贯穿」）不该有孔壁 */
+const boreNoHole = app.run(`(function(){
+  applyShape('cyl');
+  parts.length = 0; cyls.length = 0; faces.length = 0; pickSel = {};
+  cutShape = 'cyl'; cutHole = false;
+  addCyl('horiz');
+  (function(c){ c.r = 10; c.len = 90; c.hole = false; c.on = true; })(cyls[0]);
+  renderCylList(); mode = 'all'; refresh();
+  return (typeof boreGroup !== 'undefined' && boreGroup) ? boreGroup.children.length : 0;
+})()`);
+check("实体相贯（不勾「贯穿」）不生成孔壁", boreNoHole === 0, "boreMesh=" + boreNoHole);
+
+/* 点选模式：隐藏"孔内那一块"时，孔壁必须还在（否则又变成中空） */
+const borePick = app.run(`(function(){
+  applyShape('cyl');
+  parts.length = 0; cyls.length = 0; faces.length = 0; pickSel = {};
+  cutShape = 'cyl'; cutHole = true;
+  addCyl('horiz');
+  (function(c){ c.r = 10; c.len = 0; c.hole = true; c.y = 0; c.on = true; })(cyls[0]);
+  renderCylList(); mode = 'pick'; refresh();
+  var before = (typeof boreGroup !== 'undefined' && boreGroup) ? boreGroup.children.length : -1;
+  var plugKeys = cells.filter(function(c){
+    var sp = c.cyls && c.cyls[0];
+    return sp && sp.keep < 0;
+  }).map(function(c){ return c.key; });
+  plugKeys.forEach(function(k){ pickSel[k] = false; });
+  rebuildCells(); buildCellVis(); buildCylVis();
+  var after = (typeof boreGroup !== 'undefined' && boreGroup) ? boreGroup.children.length : -1;
+  return {before:before, after:after, plugKeys:plugKeys, cells:cells.length};
+})()`);
+console.log("    " + JSON.stringify(borePick));
+check("点选模式里打孔也有孔壁", borePick.before > 0, "before=" + borePick.before);
+check("隐藏孔内那块之后孔壁仍在（不是又变中空）",
+      borePick.after > 0, "after=" + borePick.after);
+
+/* 孔壁不能被误当成可点选的分块 */
+const borePickable = app.run(`(function(){
+  var bad = 0;
+  if(boreGroup) boreGroup.children.forEach(function(m){
+    if(m.userData.ck != null) bad++;
+  });
+  return bad;
+})()`);
+check("孔壁网格不带分块 key（不会被误当成可点选的分块）", borePickable === 0, "违规 " + borePickable);
+
+/* 删掉/停用贯穿圆之后孔壁要跟着消失，不留残影 */
+const boreCleanup = app.run(`(function(){
+  applyShape('cyl');
+  parts.length = 0; cyls.length = 0; faces.length = 0; pickSel = {};
+  cutShape = 'cyl'; cutHole = true;
+  addCyl('horiz');
+  (function(c){ c.r = 10; c.len = 0; c.hole = true; c.on = true; })(cyls[0]);
+  renderCylList(); mode = 'all'; refresh();
+  var withHole = (typeof boreGroup !== 'undefined' && boreGroup) ? boreGroup.children.length : -1;
+  cyls.length = 0; renderCylList(); refresh();
+  var afterDel = (typeof boreGroup !== 'undefined' && boreGroup) ? boreGroup.children.length : -1;
+  var cacheAfterDel = Object.keys(boreGeoCache).length;
+  addCyl('horiz');
+  (function(c){ c.r = 10; c.len = 0; c.hole = true; c.on = true; })(cyls[0]);
+  renderCylList(); refresh();
+  cyls[0].on = false; renderCylList(); refresh();
+  var afterOff = (typeof boreGroup !== 'undefined' && boreGroup) ? boreGroup.children.length : -1;
+  return {withHole:withHole, afterDel:afterDel, afterOff:afterOff, cacheAfterDel:cacheAfterDel};
+})()`);
+console.log("    " + JSON.stringify(boreCleanup));
+/* 没有打孔时 buildBoreVis 会直接 return，boreGroup 置为 null（返回 -1 即"不存在"） */
+const gone = function(v){ return v === 0 || v === -1; };
+check("删掉贯穿圆后孔壁消失（不留残影）", gone(boreCleanup.afterDel), "afterDel=" + boreCleanup.afterDel);
+check("停用贯穿圆后孔壁消失", gone(boreCleanup.afterOff), "afterOff=" + boreCleanup.afterOff);
+/* v33.24：孔壁几何按贯穿体缓存（点选模式下同一个孔被多块各要一次），
+   贯穿体删掉后必须回收，否则显存一直涨。 */
+check("删掉贯穿圆后孔壁几何缓存被回收（不漏显存）",
+      boreCleanup.cacheAfterDel === 0, "cache=" + boreCleanup.cacheAfterDel);
+
+/* ---------- 16. 孔壁边界必须精确落在立体表面上（"孔口两圈变深"的根因） ---------- */
+section("16. 孔壁边界 = 孔轴曲面 ∩ 立体表面（v33.24：用户反馈「贯穿后表面多出两圈颜色变深」）");
+
+/* v33.21/22/23 是"先铺一整根无限长圆筒，再按三角形丢弃/收边"。
+   逐三角形丢弃是**整块**的：孔口处只要三角形质心探针判到体外，整块就没了 →
+   孔壁在孔口没接到表面上，留一圈真实缺口。缺口里透出的是圆柱自己的
+   BackSide 深棕壳（#4b2a14）—— 用户看到的就是孔口那圈"颜色变深"。
+   实测缺口（v33.23）：cyl 水平孔 3.00mm、正平面孔 2.00mm、平放圆柱 2.00mm。
+
+   v33.24 改成**逐母线二分求交**：每条母线（沿孔轴的直线）求它在立体内部的
+   轴向区间，顶点按区间均匀铺开 → 端点精确落在表面上，缺口必然为 0。
+   这里直接量：孔壁顶点沿轴的最小/最大 t，与"孔轴与立体表面的交点"对比。 */
+/* 判据不是"孔壁长度等于孔轴穿过立体的长度" —— 对圆锥/棱锥/半球这种收口立体，
+   孔壁在半径缩到 r 处就已经和侧面相交，根本到不了锥尖（那是几何事实，不是缺口）。
+   真正的判据是：**孔壁的轴向两端顶点必须落在立体表面上**（|solidOutside| ≈ 0）。
+   有缺口时这两端的顶点会在立体**内部**，solidOutside 明显为负。 */
+const mouthFit = app.run(`(function(){
+  var out = {};
+  ['cyl','cone','frustum5','prism5','pyr3','hemi','cylz'].forEach(function(sp){
+    applyShape(sp);
+    parts.length = 0; cyls.length = 0; faces.length = 0; pickSel = {};
+    cutShape = 'cyl'; cutHole = true;
+    addCyl('horiz');
+    (function(c){ c.r = 8; c.len = 0; c.hole = true; c.y = 0; c.on = true; })(cyls[0]);
+    renderCylList(); mode = 'all'; refresh();
+    var c = cyls[0], ax = cylAxis(c).clone().normalize(), P = cylPoint(c);
+    var worst = 0, worstAt = null, ends = 0;
+    if(typeof boreGroup !== 'undefined' && boreGroup){
+      boreGroup.children.forEach(function(m){
+        var p = m.geometry.attributes.position;
+        var tmin = 1e9, tmax = -1e9, i;
+        var ts = [];
+        for(i=0;i<p.count;i++){
+          var v = new THREE.Vector3(p.getX(i), p.getY(i), p.getZ(i));
+          var t = v.sub(P).dot(ax);
+          ts.push(t);
+          if(t < tmin) tmin = t;
+          if(t > tmax) tmax = t;
+        }
+        /* 只看两端 0.2mm 以内的顶点 */
+        for(i=0;i<p.count;i++){
+          if(ts[i] > tmin + 0.2 && ts[i] < tmax - 0.2) continue;
+          var vv = new THREE.Vector3(p.getX(i), p.getY(i), p.getZ(i));
+          var d = Math.abs(solidOutside(vv));
+          ends++;
+          if(d > worst){ worst = d; worstAt = +ts[i].toFixed(2); }
+        }
+      });
+    }
+    out[sp] = {ends:ends, worst:+worst.toFixed(4), at:worstAt};
+  });
+  return out;
+})()`);
+console.log("    " + JSON.stringify(mouthFit));
+check("所有立体上孔壁两端顶点都落在表面上（|偏差| < 0.05mm，不再透出深棕背壳）",
+      Object.keys(mouthFit).every(function(k){ return mouthFit[k].worst < 0.05; }),
+      JSON.stringify(mouthFit));
+
+/* 逐顶点"不戳出表面"（v33.22 的梳齿毛刺）仍然必须成立 */
+const spikes = app.run(`(function(){
+  var out = {};
+  ['cyl','cone','frustum5','prism5','pyr3','hemi','cylz'].forEach(function(sp){
+    applyShape(sp);
+    parts.length = 0; cyls.length = 0; faces.length = 0; pickSel = {};
+    cutShape = 'cyl'; cutHole = true;
+    addCyl('horiz');
+    (function(c){ c.r = 8; c.len = 0; c.hole = true; c.y = 0; c.on = true; })(cyls[0]);
+    renderCylList(); mode = 'all'; refresh();
+    var bad = 0, worst = 0;
+    if(typeof boreGroup !== 'undefined' && boreGroup){
+      boreGroup.children.forEach(function(m){
+        var p = m.geometry.attributes.position;
+        for(var i=0;i<p.count;i++){
+          var v = new THREE.Vector3(p.getX(i), p.getY(i), p.getZ(i));
+          var d = solidOutside(v);
+          if(d > 0.01){ bad++; if(d > worst) worst = d; }
+        }
+      });
+    }
+    out[sp] = {bad:bad, worst:+worst.toFixed(2)};
+  });
+  return out;
+})()`);
+console.log("    " + JSON.stringify(spikes));
+check("所有立体上孔壁顶点都不戳出表面（毛刺根因已消除）",
+      Object.keys(spikes).every(function(k){ return spikes[k].bad === 0; }),
+      JSON.stringify(spikes));
+
+/* 法线必须朝孔内：随机取一个三角形，其法线 · 径向应当 < 0
+   （朝外就是 +径向 —— 那正是 v33.21 全黑的根因） */
+const inward = app.run(`(function(){
+  applyShape('cyl');
+  parts.length = 0; cyls.length = 0; faces.length = 0; pickSel = {};
+  cutShape = 'cyl'; cutHole = true;
+  addCyl('horiz');
+  (function(c){ c.r = 11; c.len = 0; c.hole = true; c.y = 0; c.on = true; })(cyls[0]);
+  renderCylList(); mode = 'all'; refresh();
+  if(typeof boreGroup === 'undefined' || !boreGroup) return null;
+  var c = cyls[0], ax = cylAxis(c).clone().normalize(), P = cylPoint(c);
+  var g = boreGroup.children[0].geometry;
+  var pos = g.attributes.position, idx = g.index;
+  var n = idx.count/3, outward = 0, inwardN = 0;
+  for(var t=0;t<n;t++){
+    var A = new THREE.Vector3().fromBufferAttribute(pos, idx.getX(t*3));
+    var B = new THREE.Vector3().fromBufferAttribute(pos, idx.getX(t*3+1));
+    var C = new THREE.Vector3().fromBufferAttribute(pos, idx.getX(t*3+2));
+    var nr = B.clone().sub(A).cross(C.clone().sub(A));
+    if(nr.lengthSq() < 1e-12) continue;
+    nr.normalize();
+    var cen = A.clone().add(B).add(C).multiplyScalar(1/3).sub(P);
+    cen.addScaledVector(ax, -cen.dot(ax));      // 径向分量
+    if(cen.lengthSq() < 1e-9) continue;
+    cen.normalize();
+    if(nr.dot(cen) > 0.1) outward++; else inwardN++;
+  }
+  return {outward:outward, inward:inwardN};
+})()`);
+console.log("    " + JSON.stringify(inward));
+check("孔壁三角形法线朝孔内（朝外 = Lambert 必然全黑）",
+      inward && inward.outward === 0 && inward.inward > 100,
+      JSON.stringify(inward));
+
+/* ---------- 17. v33.25：贯穿体「深度」= 盲孔 + 孔底封盖 ---------- */
+section("17. 盲孔（深度参数）：孔只挖到 depth 深，底部有材料（v33.25）");
+
+/* 用户需求原话：「需要给贯穿体加"深度"参数和孔底封盖」。
+   语义：depth=0 贯穿（老行为）；depth>0 从 +轴孔口往里钻；depth<0 从 -轴孔口钻。 */
+const blindBasic = app.run(`(function(){
+  applyShape('cyl');
+  parts.length = 0; cyls.length = 0; faces.length = 0; pickSel = {};
+  cutShape = 'cyl'; cutHole = true;
+  addCyl('frontal');
+  (function(c){ c.r = 14; c.len = 0; c.hole = true; c.depth = 22; c.on = true; })(cyls[0]);
+  renderCylList(); mode = 'all'; refresh();
+  var c = cyls[0], ax = cylAxis(c).clone().normalize(), P = cylPoint(c);
+  var bl = cylBlind(c);
+  var meshes = [];
+  if(typeof boreGroup !== 'undefined' && boreGroup){
+    boreGroup.children.forEach(function(m){
+      var p = m.geometry.attributes.position, tmin=1e9, tmax=-1e9;
+      for(var i=0;i<p.count;i++){
+        var v = new THREE.Vector3(p.getX(i), p.getY(i), p.getZ(i));
+        var t = v.clone().sub(P).dot(ax);
+        if(t<tmin)tmin=t; if(t>tmax)tmax=t;
+      }
+      meshes.push({verts:p.count, t:[+tmin.toFixed(2),+tmax.toFixed(2)],
+                   hasColor: !!m.geometry.attributes.color,
+                   hasBS: !!m.geometry.boundingSphere});
+    });
+  }
+  return {depth:c.depth, blind: bl ? {t0:+bl.t0.toFixed(2), t1:+bl.t1.toFixed(2), sign:bl.sign} : null,
+          meshes:meshes};
+})()`);
+console.log("    " + JSON.stringify(blindBasic));
+check("盲孔算出轴向窗口", blindBasic.blind !== null,
+      JSON.stringify(blindBasic.blind));
+check("孔壁只铺到 depth 深（不再贯穿到底）",
+      blindBasic.meshes.length > 0 && blindBasic.meshes[0].t[0] > 0,
+      blindBasic.meshes.length ? JSON.stringify(blindBasic.meshes[0].t) : "none");
+check("孔底生成了封盖（多出一层低顶点数网格）",
+      blindBasic.meshes.length === 2 && blindBasic.meshes[1].verts < 200,
+      JSON.stringify(blindBasic.meshes.map(function(m){ return m.verts; })));
+/* 封盖必须带顶点色（和孔壁共用 vertexColors:true 的材质）和包围球（否则被视锥剔除） */
+check("封盖带顶点色（否则整片发黑）",
+      blindBasic.meshes.length === 2 && blindBasic.meshes[1].hasColor === true,
+      JSON.stringify(blindBasic.meshes.map(function(m){ return m.hasColor; })));
+check("封盖自带包围球（three.js 惰性计算会让视锥剔除误判）",
+      blindBasic.meshes.length === 2 && blindBasic.meshes[1].hasBS === true,
+      JSON.stringify(blindBasic.meshes.map(function(m){ return m.hasBS; })));
+
+/* depth = 0 必须完全退化成老的贯穿行为 */
+const blindZero = app.run(`(function(){
+  applyShape('cyl');
+  parts.length = 0; cyls.length = 0; faces.length = 0; pickSel = {};
+  cutShape = 'cyl'; cutHole = true;
+  addCyl('frontal');
+  (function(c){ c.r = 14; c.len = 0; c.hole = true; c.depth = 0; c.on = true; })(cyls[0]);
+  renderCylList(); mode = 'all'; refresh();
+  var c = cyls[0], ax = cylAxis(c).clone().normalize(), P = cylPoint(c);
+  var n = boreGroup ? boreGroup.children.length : -1;
+  var t = [1e9,-1e9];
+  if(boreGroup) boreGroup.children.forEach(function(m){
+    var p = m.geometry.attributes.position;
+    for(var i=0;i<p.count;i++){
+      var v = new THREE.Vector3(p.getX(i), p.getY(i), p.getZ(i));
+      var tt = v.clone().sub(P).dot(ax);
+      if(tt<t[0])t[0]=tt; if(tt>t[1])t[1]=tt;
+    }
+  });
+  return {n:n, blind: cylBlind(c), t:[+t[0].toFixed(2), +t[1].toFixed(2)]};
+})()`);
+console.log("    " + JSON.stringify(blindZero));
+check("depth=0 时不生成盲孔窗口（老行为不变）", blindZero.blind === null,
+      JSON.stringify(blindZero.blind));
+check("depth=0 时孔壁仍是贯穿的（只有一层网格）", blindZero.n === 1, "n=" + blindZero.n);
+
+/* 负深度：从另一侧孔口往里钻 */
+const blindNeg = app.run(`(function(){
+  applyShape('cyl');
+  parts.length = 0; cyls.length = 0; faces.length = 0; pickSel = {};
+  cutShape = 'cyl'; cutHole = true;
+  addCyl('frontal');
+  (function(c){ c.r = 14; c.len = 0; c.hole = true; c.depth = -18; c.on = true; })(cyls[0]);
+  renderCylList(); mode = 'all'; refresh();
+  var bl = cylBlind(cyls[0]);
+  return bl ? {t0:+bl.t0.toFixed(2), t1:+bl.t1.toFixed(2), sign:bl.sign} : null;
+})()`);
+console.log("    " + JSON.stringify(blindNeg));
+check("负深度从 -轴孔口往里钻（窗口方向相反）",
+      blindNeg && blindNeg.sign === -1, JSON.stringify(blindNeg));
+
+/* 孔底封盖必须真的挡住视线：沿孔轴打射线，第一层命中应当是封盖 */
+const blindOcclude = app.run(`(function(){
+  applyShape('cyl');
+  parts.length = 0; cyls.length = 0; faces.length = 0; pickSel = {};
+  cutShape = 'cyl'; cutHole = true;
+  addCyl('frontal');
+  (function(c){ c.r = 14; c.len = 0; c.hole = true; c.depth = 22; c.on = true; })(cyls[0]);
+  renderCylList(); mode = 'all'; refresh();
+  var c = cyls[0], ax = cylAxis(c).clone().normalize(), P = cylPoint(c);
+  var rc = new THREE.Raycaster();
+  rc.set(P.clone().addScaledVector(ax, 80), ax.clone().negate());
+  var hits = rc.intersectObjects(scene.children, true).filter(function(h){ return h.object.isMesh; });
+  var first = null;
+  for(var i=0;i<hits.length;i++){
+    if(hits[i].object.userData && hits[i].object.userData.bore){
+      first = {t:+(hits[i].point.clone().sub(P).dot(ax)).toFixed(2),
+               verts:hits[i].object.geometry.attributes.position.count};
+      break;
+    }
+  }
+  return first;
+})()`);
+console.log("    " + JSON.stringify(blindOcclude));
+check("沿孔轴射线命中的第一层孔内几何是封盖（不是空腔）",
+      blindOcclude && blindOcclude.verts < 200, JSON.stringify(blindOcclude));
+
 console.log("  PASS " + pass + "   FAIL " + fail);
 console.log("=========================================");
 process.exit(fail ? 1 : 0);
