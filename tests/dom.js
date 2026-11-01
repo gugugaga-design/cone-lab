@@ -169,7 +169,7 @@ function makeDocument(){
   });
 
   var left = new FakeEl("div"); left.id = "leftbtns"; stage.appendChild(left);
-  ["btnSolid","btnSolidPart","btnCurve","btnXline","btnLock","btnUndo"].forEach(function(id){
+  ["btnSolid","btnSolidPart","btnCurve","btnXline","btnHl","btnLock","btnUndo"].forEach(function(id){
     var b = reg(new FakeEl("button"), id); left.appendChild(b);
   });
   reg(new FakeEl("div"), "hint"); stage.appendChild(byId.hint);

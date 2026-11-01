@@ -61,15 +61,17 @@ check("按钮置为 on", doc.getElementById("btnSolidPart").classList.contains("
 let m1 = partMats().filter(function(x){ return x.pi != null; });
 check("变成青色实体 #12d6c8", m1.every(function(x){ return x.c === "12d6c8"; }), "colors="+m1.map(function(x){return x.c;}).join(","));
 check("不再半透明", m1.every(function(x){ return x.tr === false && x.op === 1; }));
-check("穿透轮廓已加上（埋在立体里也看得见）",
-      partMats().some(function(x){ return x.decor && x.dt === false && x.c === "5ffff0"; }));
+/* v33.30 改判：这圈 depthTest:false 的"穿透轮廓"正是用户说的"玻璃盒 / 能透过模型看到里面"。
+   它现在只在部件**整块埋在主立体里**时才画。实验室模式根本没有主立体 → 一个都不该有。 */
+check("露在外面时不再画穿透轮廓（v33.30：不再是玻璃盒）",
+      !partMats().some(function(x){ return x.decor && x.dt === false && x.c === "5ffff0"; }));
 doc.getElementById("btnSolidPart").dispatch("click");
 let m2 = partMats().filter(function(x){ return x.pi != null; });
 check("再点一次还原半透明", m2.every(function(x){ return x.tr && x.c === "8fd8ff"; }));
 
-// 关键：主立体页面里部件埋在立体内部时也要看得见
-app.run("applyShape('cone'); parts.length=0; cyls.length=0; faces.length=0; addPart('cyl');");
-app.run("(function(){ var p=parts[0]; p.r=16;p.h=44;p.x=0;p.y=0;p.z=0; })()");
+// 关键：主立体页面里部件**整块埋在立体内部**时也要看得见
+app.run("applyShape('cone'); parts.length=0; cyls.length=0; faces.length=0; addPart('sphere');");
+app.run("(function(){ var p=parts[0]; p.r=7;p.x=0;p.y=-8;p.z=0; })()");
 app.run("mode='all'; refresh();");
 const buried = app.run(`(function(){
   var camPos=new THREE.Vector3(150,95,170), occ=0, tot=0;
@@ -84,7 +86,8 @@ const buried = app.run(`(function(){
   raycaster.far=Infinity;
   return {tot:tot, occluded:occ};
 })()`);
-check("确认部件确实被主立体埋住（问题场景成立）", buried.occluded > 0, JSON.stringify(buried));
+check("确认部件整块被主立体埋住（问题场景成立）", buried.tot > 0 && buried.occluded === buried.tot, JSON.stringify(buried));
+check("埋住判定 partBuried 与遮挡实测一致", app.run("(function(){ return partBuried(parts[0], partGeoOf(parts[0])); })()") === true);
 doc.getElementById("btnSolidPart").dispatch("click");
 check("埋住时变实仍有穿透轮廓可见", partMats().some(function(x){ return x.decor && x.dt === false; }));
 check("埋住时网格也确实是青色实体", partMats().filter(function(x){ return x.pi != null; }).every(function(x){ return x.c === "12d6c8"; }));

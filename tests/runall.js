@@ -22,7 +22,9 @@ const SUITES = [
   ["tests/eventflow.js","真实DOM事件流点选"],
   ["tests/pickfix.js",  "点选中空/伸出段/移动残留"],
   ["tests/cylcurve.js", "相贯线完整性（覆盖率）"],
+  ["tests/bodies.js",   "空心圆柱+相贯体九种"],
   ["tests/viewtoggle.js","三视图二阶切换"],
+  ["tests/hlpart.js",   "取消高亮+拼装实体"],
   ["tests/verify.js",   "独立 harness #1"],
   ["tests/test3/regions.js", "独立 harness #2"],
 ];
