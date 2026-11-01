@@ -567,6 +567,7 @@ check("estimateSampleSpacing 单次 < 5ms（拖动每帧都会调）",
       spacingPerf.ms < 5, spacingPerf.ms + "ms / " + spacingPerf.n + " 点");
 
 console.log("\n=========================================");
+
 /* ---------- 15. 贯穿打孔必须生成孔壁（否则"内部中空"） ---------- */
 section("15. 贯穿打孔要画出孔壁（v33.21：用户反馈「用贯穿圆后圆柱内部变成中空」）");
 
@@ -960,6 +961,89 @@ const blindOcclude = app.run(`(function(){
 console.log("    " + JSON.stringify(blindOcclude));
 check("沿孔轴射线命中的第一层孔内几何是封盖（不是空腔）",
       blindOcclude && blindOcclude.verts < 200, JSON.stringify(blindOcclude));
+
+
+/* ===== 18. 孔内块默认隐藏（v33.28：用户反馈两个问题）
+   问题1：切进「点选保留部分」的瞬间，贯穿圆不再贯穿（孔被孔内块填上）。
+   问题2：平放圆柱 + 正平面/水平面贯穿圆 + 过中心侧平面，只留右半时
+          有一块（深埋的孔内块）怎么点都消失不了。 ====== */
+section("18. 孔内块默认隐藏：进点选模式孔仍是钻穿的（v33.28）");
+
+/* 18a. 单孔：孔内块默认 sel=false */
+const plugSingle = app.run(`(function(){
+  applyShape('cylz');
+  parts.length = 0; cyls.length = 0; faces.length = 0; pickSel = {};
+  cutShape = 'cyl'; cutHole = true;
+  addCyl('horiz');
+  renderCylList(); mode = 'pick'; refresh();
+  return cells.map(function(c){
+    var sp = c.cyls && c.cyls[0];
+    return { plug: !!(sp && sp.keep < 0), sel: c.sel !== false };
+  });
+})()`);
+var plugCells = plugSingle.filter(function(r){ return r.plug; });
+var matCells  = plugSingle.filter(function(r){ return !r.plug; });
+check("单孔：孔内块存在", plugCells.length > 0, "plug=" + plugCells.length + " mat=" + matCells.length);
+check("单孔：孔内块默认隐藏（孔保持贯穿外观）",
+      plugCells.every(function(r){ return !r.sel; }),
+      "可见孔内块 " + plugCells.filter(function(r){return r.sel;}).length + "/" + plugCells.length);
+check("单孔：材料块默认保留",
+      matCells.every(function(r){ return r.sel; }));
+
+/* 18b. 用户场景：同轴孔 + 竖直孔 + 过中心侧平面，全部孔内块（含两孔相交的深埋块）默认隐藏 */
+const plugUser = app.run(`(function(){
+  applyShape('cylz');
+  parts.length = 0; cyls.length = 0; faces.length = 0; pickSel = {};
+  cutShape = 'cyl'; cutHole = true;
+  addCyl('frontal');   // 轴=Z，与平放圆柱同轴
+  addCyl('horiz');     // 轴=Y，竖直孔
+  faces.push({type:'lat', ang:0, x:0, y:0, z:0, on:true, flip:false});
+  renderList(); mode = 'pick'; refresh();
+  var cs = activeCyls();
+  var rows = cells.map(function(c){
+    var pk = parseCellKey(c.key);
+    var inHole = cs.some(function(cc){ return cc.hole && pk.cm[cc._id] === 3; });
+    return { inHole: inHole, sel: c.sel !== false };
+  });
+  return { hole: rows.filter(function(r){return r.inHole;}),
+           mat: rows.filter(function(r){return !r.inHole;}),
+           /* 两孔相交区取确定点（不靠随机采样）：
+              (5,5,0) 在同轴孔内（x²+y²=50<11²）也在竖直孔内（x²+z²=25<11²），
+              且不在侧平面（x=0）上 */
+           bothKey: (function(){
+             var Q = new THREE.Vector3(5,5,0);
+             var k = cellKeyAt(Q, activeFaceData(), cs, activeParts());
+             var act = k ? resolveToActualCellKey(k, Q) : null;
+             var c = act ? cellOfKey(act) : null;
+             return { raw:k, act:act, exists:!!c, sel:c ? (c.sel !== false) : null };
+           })() };
+})()`);
+check("双孔场景：两孔相交区确有分块（就是截图里点不掉的那块）",
+      plugUser.bothKey.exists, JSON.stringify(plugUser.bothKey));
+check("双孔场景：两孔相交的深埋块默认隐藏",
+      plugUser.bothKey.exists && plugUser.bothKey.sel === false,
+      "sel=" + plugUser.bothKey.sel);
+check("双孔场景：全部孔内块默认隐藏（问题1+问题2 一起修）",
+      plugUser.hole.length > 0 && plugUser.hole.every(function(r){ return !r.sel; }),
+      "孔内块 " + plugUser.hole.length + " 个，可见 " + plugUser.hole.filter(function(r){return r.sel;}).length);
+check("双孔场景：材料块默认保留",
+      plugUser.mat.every(function(r){ return r.sel; }),
+      "材料块 " + plugUser.mat.length);
+
+/* 18c. 用户点过（pickSel 有记录）→ 尊重记录：点过的孔内块可以保持显示 */
+const plugToggle = app.run(`(function(){
+  var plugKey = null;
+  cells.forEach(function(c){
+    var sp = c.cyls && c.cyls[0];
+    if(!plugKey && sp && sp.keep < 0) plugKey = c.key;
+  });
+  pickSel[plugKey] = true;
+  rebuildCells();
+  var c = cellOfKey(plugKey);
+  return { found: !!c, sel: c ? c.sel !== false : null };
+})()`);
+check("点过的孔内块尊重用户记录（可显示回来）",
+      plugToggle.found && plugToggle.sel === true, JSON.stringify(plugToggle));
 
 console.log("  PASS " + pass + "   FAIL " + fail);
 console.log("=========================================");

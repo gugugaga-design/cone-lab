@@ -1996,10 +1996,12 @@ function rebuildCells(){
         planes.push(partEndPlane(pr, "aboveBot"));
       }
     }
-    /* 「点选保留部分」里所有分块默认全部保留（含打孔时孔里那一块）——
-       这样在孔的位置轻点一下就能把"被钻掉的那块"隐藏，孔立刻出现；
-       再点一下又能显示回来。隐藏状态一律由用户点选决定，不做隐式默认；
-       但**新增**面/贯穿体/部件导致 key 变化时，按父块继承（selInherit）。
+    /* 「点选保留部分」的分块默认全部保留 —— 但**打孔挖掉的『孔里那一块』例外**（v33.28）：
+       孔内块代表的是被钻掉的材料，其它模式里孔都是钻穿的；原来它默认显示，
+       切进点选模式的瞬间两个贯穿圆就『不再贯穿』（用户问题1）；
+       而且两孔相交处 / 孔道远端这些深埋在立体内部的孔内块，轻点永远先命中
+       外表面那块（cellAtPoint 不看 sel），怎么点都点不掉 —— 截图里内圆右缘
+       那小块橙色就是它（用户问题2）。规则见下面 return 前的 sel0 计算。
 
        v33.2（问题①真正的根因）：**每个 cell 必须记住它属于哪一份几何体**。
        分块网格原来一律用主立体的 `geo`，可**实验室模式没有主立体**（`geo` 是空
@@ -2035,9 +2037,16 @@ function rebuildCells(){
         planes.push(new THREE.Plane(dir.clone().negate(), hi));
       }
     }
+    /* v33.28：孔内块（hole 型贯穿圆的 code=3 区域）默认隐藏 ——
+       用户点过（pickSel 有记录）则尊重记录；没点过且不是孔内块才走 selInherit。 */
+    var inHolePlug = false;
+    for(var hi2=0; hi2<cs.length; hi2++){
+      if(cs[hi2].hole && pk.cm[cs[hi2]._id] === 3){ inHolePlug = true; break; }
+    }
+    var sel0 = (inHolePlug && pickSel[k] === undefined) ? false : selInherit(k, pk, 0);
     return {key:k, planes:planes, cyls:cylSpecs, parts:partSpecs,
             ownerPart: ownerPart, pts: ptsBySplitKey[k] || null,
-            sel: selInherit(k, pk, 0)};
+            sel: sel0};
   });
 }
 /* 部件内部的采样点（给"部件参与分块"用）：按部件自身形状撒点。
