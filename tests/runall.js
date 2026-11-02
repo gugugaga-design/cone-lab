@@ -25,6 +25,7 @@ const SUITES = [
   ["tests/bodies.js",   "空心圆柱+相贯体九种"],
   ["tests/viewtoggle.js","三视图二阶切换"],
   ["tests/hlpart.js",   "取消高亮+拼装实体"],
+  ["tests/partcap.js",  "拼装部件分块封盖"],
   ["tests/verify.js",   "独立 harness #1"],
   ["tests/test3/regions.js", "独立 harness #2"],
 ];

@@ -1178,6 +1178,71 @@ function sectionPoly2D(nv, d, N){
   });
   return {B:B, poly:hull2D(poly)};
 }
+/* v33.31：平面与"拼装部件"的截面多边形（2D，供封盖裁剪用）。
+   ★ 用户 bug："实验室拼装变实 + 点选保留后仍然中空"——
+   cellCaps 对部件块（ownerPart != null）也走 sectionPoly2D（按主立体算截面），
+   实验室没有主立体 → 截面恒为空 → 部件分块的封盖从来没画出来过；
+   隐藏相邻块后直接看进切口内壁（截图里侧垂面斜切圆柱的椭圆暗窗）。
+   这里按部件算：在平面参数域撒网格点，保留落在部件内的点，凸包成截面。
+   部件（圆柱/长方体/立方/球/半球/圆锥/圆台/三棱锥）都是凸体 → 凸包即精确截面；
+   槽（半圆管壳）非凸，凸包会把开口填平 —— 罕见场景，先接受。
+   两遍采样：第一遍在部件包围盒的平面投影域上粗撒；命中后第二遍在命中
+   包围盒里加密 —— 截面只占投影一小角（薄切片）时也能取圆。 */
+var _partCapCache = {};
+function partSectionPoly2D(pr, nv, d){
+  var sig = [pr._id, pr.k, pr.x, pr.y, pr.z, pr.type, pr.ang,
+             pr.r, pr.rt, pr.h, pr.w, pr.d, pr.a,
+             nv.x.toFixed(6), nv.y.toFixed(6), nv.z.toFixed(6), d.toFixed(6)].join("|");
+  if(_partCapCache[sig]) return _partCapCache[sig];
+  var B = planeBasis(nv, d);
+  /* 部件的世界包围盒：局部盒（|x|,|z|<=maxR，|y|<=halfH）8 角点变换后投影到平面基。
+     尺寸口径与 partBodyPoints / partSpecOf 一致。 */
+  var halfH = (pr.k === "sphere" || pr.k === "hemi") ? pr.r : (pr.h || pr.a || 20)/2;
+  var maxR  = (pr.k === "box") ? Math.max(pr.w, pr.d)/2
+            : (pr.k === "cube") ? pr.a/2
+            : (pr.k === "slot") ? Math.max(pr.w, pr.d)/2
+            : (pr.r || pr.a || 10);
+  var m = partMatrix(pr), p = new THREE.Vector3(), q = new THREE.Vector3();
+  var umin=1e9, umax=-1e9, vmin=1e9, vmax=-1e9;
+  for(var i=0;i<8;i++){
+    p.set((i&1)?maxR:-maxR, (i&2)?halfH:-halfH, (i&4)?maxR:-maxR).applyMatrix4(m);
+    q.copy(p).sub(B.O);
+    var u9 = q.dot(B.U), v9 = q.dot(B.V);
+    if(u9<umin)umin=u9; if(u9>umax)umax=u9;
+    if(v9<vmin)vmin=v9; if(v9>vmax)vmax=v9;
+  }
+  var poly = [];
+  var u0 = umin, u1 = umax, v0 = vmin, v1 = vmax, N9 = 56;
+  var spanU = u1-u0, spanV = v1-v0;
+  if(spanU > 1e-6 && spanV > 1e-6){
+    for(var pass=0; pass<2; pass++){
+      poly = [];
+      var su = u1-u0, sv = v1-v0;
+      if(su <= 1e-9 || sv <= 1e-9) break;
+      for(var iu=0; iu<=N9; iu++){
+        for(var iv=0; iv<=N9; iv++){
+          var uu = u0 + su*iu/N9, vv = v0 + sv*iv/N9;
+          p.copy(B.O).addScaledVector(B.U, uu).addScaledVector(B.V, vv);
+          if(insidePartWorld(pr, p)) poly.push([uu, vv]);
+        }
+      }
+      if(poly.length < 3) break;
+      if(pass === 1) break;
+      /* 第二遍：在命中包围盒（外扩 2%）里加密采样 */
+      var nu0=1e9, nu1=-1e9, nw0=1e9, nw1=-1e9;
+      poly.forEach(function(pt){
+        if(pt[0]<nu0)nu0=pt[0]; if(pt[0]>nu1)nu1=pt[0];
+        if(pt[1]<nw0)nw0=pt[1]; if(pt[1]>nw1)nw1=pt[1];
+      });
+      var pad9 = Math.max(nu1-nu0, nw1-nw0)*0.02 + 1e-4;
+      u0 = nu0-pad9; u1 = nu1+pad9; v0 = nw0-pad9; v1 = nw1+pad9;
+      N9 = 72;
+    }
+  }
+  var res = {B:B, poly: (poly.length>=3) ? hull2D(poly) : []};
+  _partCapCache[sig] = res;
+  return res;
+}
 
 /* 平面与立体的截线采样。
    圆锥：解析求 y(θ)（三种二次曲线通用公式，倒放也正确）
@@ -2283,8 +2348,21 @@ function cellCaps(c, act){
      于是封盖画到块的**反侧**去，屏幕上就是一块深色的莫名阴影。
      现在统一走 parseCellKey()（它已经会剥掉 "#n" 连通分量后缀）。 */
   var pkCap = parseCellKey(c.key);
+  /* v33.31：部件内部的块（ownerPart != null）→ 封盖按"平面∩该部件"算。
+     原来一律走 sectionPoly2D（平面∩主立体），实验室没有主立体 → 恒空 →
+     部件块从来没封盖（"拼装后点选保留仍中空"的根因①）。
+     非实验室模式下部件块也一并受益：块的可画几何就是部件几何，
+     封盖当然也该是"平面∩部件"，而不是比它大的一整片主立体截面。
+     注意：其余面对该截面的半空间裁剪在下面统一做（与主立体路径共用）。 */
+  var ownPr = null;
+  if(c.ownerPart != null){
+    var psCap = activeParts();
+    if(psCap[c.ownerPart]) ownPr = psCap[c.ownerPart];
+  }
   for(var m=0; m<nP; m++){
-    var o = act[m], sp = sectionPoly2D(o.nv, o.d, 96);
+    var o = act[m];
+    var sp = ownPr ? partSectionPoly2D(ownPr, o.nv, o.d)
+                   : sectionPoly2D(o.nv, o.d, 96);
     if(!sp.poly || sp.poly.length < 3) continue;
     var B = sp.B, poly = sp.poly;
     for(var j=0; j<nP && poly.length>=3; j++){
@@ -2339,6 +2417,7 @@ function cellCaps(c, act){
   return out;
 }
 function buildCellVis(){
+  _partCapCache = {};       // v33.31：部件截面封盖缓存按次重建
   if(cellGroup){
     scene.remove(cellGroup);
     cellGroup.traverse(function(ch){ if(ch.material) ch.material.dispose(); });
@@ -2467,11 +2546,20 @@ function buildCellVis(){
         /* v33.16：封盖必须带上**本块自己的裁剪平面**。
            旧代码只给了 cyl/part 的着色器规格，没有 clippingPlanes ——
            于是封盖是"整个截面"的一大片，直接盖到别的分块上，
-           叠出来就是那块"莫名的阴影"。 */
-        var capMat = new THREE.MeshLambertMaterial({color:0xdd7a34, side:THREE.DoubleSide,
-          clippingPlanes:c.planes, clipIntersection:false});
+           叠出来就是那块"莫名的阴影"。
+           v33.31：颜色跟随归属 —— 部件块的封盖用部件配色
+           （变实 = 青色实体 #12d6c8，未变实 = 青蓝 #8fd8ff），
+           主立体分块保持切口橙 #dd7a34。 */
+        var capMat = new THREE.MeshLambertMaterial({
+          color: ownPart ? (tintPart ? 0x12d6c8 : 0x8fd8ff) : 0xdd7a34,
+          side:THREE.DoubleSide, clippingPlanes:c.planes, clipIntersection:false});
         setCylSpecs(capMat, withBoreCapSpec(capSpecs));   // 孔洞处丢弃，别把孔盖死（空心圆柱连内孔一起挖）
-        setPartSpecs(capMat, capPartSpecs);  // 盖子上也按部件裁
+        /* v33.31（"拼装后点选保留仍中空"的根因②）：
+           capPartSpecs 全部是 keep=+1（保留部件外部），部件块封盖的每个片元
+           都落在**自己部件内部** → 整张盖子被着色器全片丢弃。
+           跳过自己那一条（与上面分块网格 mk() 里 skip ownSpec 同一套逻辑），
+           其余部件/贯穿体的裁剪照常保留。 */
+        setPartSpecs(capMat, capPartSpecs.filter(function(_, ii){ return ii !== c.ownerPart; }));
         capMat.depthTest = true;
         var cm = new THREE.Mesh(g, capMat);
         cm.renderOrder = 1012;
