@@ -27,6 +27,7 @@ const SUITES = [
   ["tests/hlpart.js",   "取消高亮+拼装实体"],
   ["tests/partcap.js",  "拼装部件分块封盖"],
   ["tests/snapmodel.js","自动吸附：模型轮廓+接触"],
+  ["tests/solidcap.js", "点选保留剩余块封盖（实体）"],
   ["tests/verify.js",   "独立 harness #1"],
   ["tests/test3/regions.js", "独立 harness #2"],
 ];

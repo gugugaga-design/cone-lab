@@ -1169,16 +1169,101 @@ function sectionPolyND(nv, d, N){
   if(h.length < 3) return [];
   return h.map(function(q){ return B.O.clone().addScaledVector(B.U, q[0]).addScaledVector(B.V, q[1]); });
 }
-/* 平面与立体的截面多边形（2D，供封盖裁剪用） */
+/* v33.33：平面∩主立体的**精确截面边界**（平面内极坐标射线 + 二分），
+   完全不依赖 sectionPointsND 的截交线参数公式。
+
+   ★ 用户 bug「点选保留（=切割）后剩下的部分在显示上不是实体」的根因：
+     sectionPointsND 对圆锥是按「固定 θ 解 y」参数化的：
+         y = (d − (R/2)·B) / (nv.y + ks·(R/H)·B)
+     当平面**恰好过锥尖**时 d = nv·apex = nv.y·(H/2)，而
+         d − (R/2)·B ≡ (H/2)·(nv.y + ks·(R/H)·B)
+     → 对**每一个 θ** 都解出同一个 y = H/2、r = 0（就是锥尖那一个点）；
+     真正构成截面的两条母线对应 den≈0，却被 `if(Math.abs(den)<1e-6) continue` 丢掉。
+     于是 N 个采样点全部塌缩成一点 → hull2D 退化成 0 面积 →
+     **cellCaps 在这个剖面上一张盖板都生不出来** → 隐藏相邻块后切口敞着，
+     能直接看穿到内壁（深棕 BackSide），就是用户说的「剩下的不是实体」。
+     v33.32 的自动吸附会把面吸到「过锥尖」，让这个老退化变得极易触发
+     （用户场景第一个侧垂面 -80° 的 d=6.9459 = 0.1736×40，正是过锥尖）。
+
+   这里换一条正交的路：在平面内从任一体内点沿 K 个方向二分求「最远仍在体内」的点，
+   对凸体（圆锥/圆柱/半球/多面体/平放圆柱）得到的就是精确截面边界。
+   与 sectionPointsND 的点集合并后取凸包 —— 正常情形与旧结果一致，
+   退化/塌缩情形由这批点补齐，封盖不再缺失。
+   空心圆柱（非凸）跳过：它的双环截面由 sectionPointsND 专门处理，
+   内孔仍由封盖材质 withBoreCapSpec 挖掉，行为保持不变。 */
+function solidSectionRim2D(nv, d, B, K){
+  K = K || 96;
+  if(SHAPES[shape].lab || SHAPES[shape].hollow) return [];
+  var O = B.O, P = new THREE.Vector3(), C = null;
+  if(insideCone(O)) C = O.clone();
+  else {
+    /* 平面上离原点最近的点落在体外（平面只擦到立体边缘）：
+       在立体包围盒的平面投影域上粗撒，找第一个体内点 */
+    var span = Math.max(R, H/2)*1.8 + 5, N9 = 20;
+    for(var iu=0; iu<=N9 && !C; iu++){
+      for(var iv=0; iv<=N9 && !C; iv++){
+        P.copy(O).addScaledVector(B.U, span*(2*iu/N9-1))
+                 .addScaledVector(B.V, span*(2*iv/N9-1));
+        if(insideCone(P)) C = P.clone();
+      }
+    }
+  }
+  if(!C) return [];                       // 平面与立体不相交（或只相切）
+  var q0 = C.clone().sub(O), cU = q0.dot(B.U), cV = q0.dot(B.V);
+  var maxT = Math.max(R, H)*3 + 20;
+  var out = [];
+  for(var k=0; k<K; k++){
+    var th = k/K*Math.PI*2, du = Math.cos(th), dv = Math.sin(th);
+    var lo = 0, hi = 0.5;
+    /* 指数放大：lo 恒为「体内」，hi 第一次落在体外 */
+    while(hi < maxT){
+      P.copy(C).addScaledVector(B.U, du*hi).addScaledVector(B.V, dv*hi);
+      if(!insideCone(P)) break;
+      lo = hi;
+      hi = Math.min(hi*2, maxT);
+      if(hi <= lo) break;
+    }
+    for(var it=0; it<24; it++){
+      var mid = (lo+hi)*0.5;
+      P.copy(C).addScaledVector(B.U, du*mid).addScaledVector(B.V, dv*mid);
+      if(insideCone(P)) lo = mid; else hi = mid;
+    }
+    out.push([cU + du*lo, cV + dv*lo]);
+  }
+  return out;
+}
+/* 平面与立体的截面多边形（2D，供封盖裁剪用）。
+   缓存：cellCaps 对每个保留块都会问同一个剖面，按 shape/flip/平面方程命中即可。 */
+var _mainCapCache = {};
+function polyArea2D(poly){
+  var a = 0;
+  for(var i=0;i<poly.length;i++){
+    var P = poly[i], Q = poly[(i+1)%poly.length];
+    a += P[0]*Q[1] - Q[0]*P[1];
+  }
+  return Math.abs(a)/2;
+}
 function sectionPoly2D(nv, d, N){
+  var sig = [shape, flipped?1:0,
+             nv.x.toFixed(6), nv.y.toFixed(6), nv.z.toFixed(6), d.toFixed(6)].join("|");
+  if(_mainCapCache[sig]) return _mainCapCache[sig];
   var pts = sectionPointsND(nv, d, N || 96);
-  if(pts.length < 4) return {B:null, poly:[]};
-  var B = planeBasis(nv, d), poly = [];
+  var B = planeBasis(nv, d), raw = [];
   pts.forEach(function(p){
     var q = p.clone().sub(B.O);
-    poly.push([q.dot(B.U), q.dot(B.V)]);
+    raw.push([q.dot(B.U), q.dot(B.V)]);
   });
-  return {B:B, poly:hull2D(poly)};
+  var hOld = (raw.length>=3) ? hull2D(raw) : [];
+  /* v33.33：只有「参数公式算出来的截面确实塌缩/不完整」时才换成精确边界点集。
+     两者都是 96 点内接多边形、正常情形面积几乎相等（差 <0.2%）；
+     直接并集会让正常剖面顶点数翻倍、扇形三角化出大量细长三角形（v33.19 的条纹类隐患）。
+     过锥尖的退化剖面 hOld 面积 = 0，精确边界面积是有限值 → 稳定命中这条替换。 */
+  var rim = solidSectionRim2D(nv, d, B, 96);
+  var hRim = (rim.length>=3) ? hull2D(rim) : [];
+  var poly = (polyArea2D(hRim) > polyArea2D(hOld)*1.02) ? hRim : hOld;
+  var res = {B:B, poly:poly};
+  _mainCapCache[sig] = res;
+  return res;
 }
 /* v33.31：平面与"拼装部件"的截面多边形（2D，供封盖裁剪用）。
    ★ 用户 bug："实验室拼装变实 + 点选保留后仍然中空"——
@@ -2420,6 +2505,7 @@ function cellCaps(c, act){
 }
 function buildCellVis(){
   _partCapCache = {};       // v33.31：部件截面封盖缓存按次重建
+  _mainCapCache = {};       // v33.33：主立体截面封盖缓存按次重建
   if(cellGroup){
     scene.remove(cellGroup);
     cellGroup.traverse(function(ch){ if(ch.material) ch.material.dispose(); });
