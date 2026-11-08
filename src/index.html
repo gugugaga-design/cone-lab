@@ -1211,9 +1211,20 @@ function solidSectionRim2D(nv, d, B, K){
   if(!C) return [];                       // 平面与立体不相交（或只相切）
   var q0 = C.clone().sub(O), cU = q0.dot(B.U), cV = q0.dot(B.V);
   var maxT = Math.max(R, H)*3 + 20;
-  var out = [];
-  for(var k=0; k<K; k++){
-    var th = k/K*Math.PI*2, du = Math.cos(th), dv = Math.sin(th);
+  /* v33.34：角点精化。
+     ★ 用户 v33.33 后仍有的「两处小楔形/月牙」根因：等间隔的 K 个射线方向
+       几乎不可能正好命中凸多边形截面的**尖角**，落在相邻两条边上的点一取凸包，
+       就把每个角"斜切"掉一小块。过锥尖的三角形截面实测：
+         解析三角形面积 2150.813，射线凸包只有 2140.776（少 10.04 mm²）；
+         两个底角到凸包的距离各 2.270mm，锥尖 0。
+       按放大视图 ≈14px/mm，就是约 30px 的小楔形 —— 正是用户黄圈的两处瑕疵
+       （底面弦两端在底椭圆上、斜边被截短处在锥面上）。
+     ρ(θ)=从 C 沿方向 θ 到边界的距离，在**角点方向取局部极大**（两侧分别属于
+       两条边，ρ 向两侧递减 → 该区间内单峰）。在每个局部峰两侧的采样区间里做
+       黄金分割搜索，即可把被削掉的角点精确找回来。只对明确的局部峰做，
+       圆形/椭圆截面的平滑段不会被插入伪顶点。 */
+  function radial(th){
+    var du = Math.cos(th), dv = Math.sin(th);
     var lo = 0, hi = 0.5;
     /* 指数放大：lo 恒为「体内」，hi 第一次落在体外 */
     while(hi < maxT){
@@ -1223,12 +1234,32 @@ function solidSectionRim2D(nv, d, B, K){
       hi = Math.min(hi*2, maxT);
       if(hi <= lo) break;
     }
-    for(var it=0; it<24; it++){
+    for(var it=0; it<28; it++){
       var mid = (lo+hi)*0.5;
       P.copy(C).addScaledVector(B.U, du*mid).addScaledVector(B.V, dv*mid);
       if(insideCone(P)) lo = mid; else hi = mid;
     }
-    out.push([cU + du*lo, cV + dv*lo]);
+    return lo;
+  }
+  var rho = [], out = [], k;
+  for(k=0; k<K; k++){
+    var th = k/K*Math.PI*2, r = radial(th);
+    rho.push(r);
+    out.push([cU + Math.cos(th)*r, cV + Math.sin(th)*r]);
+  }
+  for(k=0; k<K; k++){
+    var prev = rho[(k-1+K)%K], cur = rho[k], next = rho[(k+1)%K];
+    /* 常量段（圆柱/圆的平滑弧）会有浮点级抖动，1e-6 阈值过滤掉伪峰 */
+    if(!(cur > prev + 1e-6 && cur >= next - 1e-6)) continue;
+    var a = (k-1)/K*Math.PI*2, b = (k+1)/K*Math.PI*2;
+    var g1 = a + (b-a)*0.381966, g2 = a + (b-a)*0.618034;
+    var f1 = radial(g1), f2 = radial(g2);
+    for(var it2=0; it2<44; it2++){
+      if(f1 < f2){ a = g1; g1 = g2; f1 = f2; g2 = a + (b-a)*0.618034; f2 = radial(g2); }
+      else       { b = g2; g2 = g1; f2 = f1; g1 = a + (b-a)*0.381966; f1 = radial(g1); }
+    }
+    var tc = (a+b)*0.5, rc = radial(tc);
+    out.push([cU + Math.cos(tc)*rc, cV + Math.sin(tc)*rc]);
   }
   return out;
 }

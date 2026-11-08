@@ -1,4 +1,4 @@
-/* v33.33 回归套件：点选保留（=切割）后，剩余块必须是实体
+/* v33.33 / v33.34 回归套件：点选保留（=切割）后，剩余块必须是实体
    用户场景：圆锥 + 侧垂面-80° + 水平面-15 + 侧垂面60° → 7 部分，
    隐藏 3 部分后「剩下的部分在显示上不是实体」（能透过模型看到里面）。
 
@@ -12,6 +12,13 @@
 
    修法：新增 solidSectionRim2D（平面内极坐标射线 + 二分求精确截面边界），
    sectionPoly2D 只在原截面面积明显偏小（>2% 差）时换成这份精确边界点集。
+
+   v33.34：修完上面的大 bug 后仍剩两处「小楔形/月牙」。根因是等间隔的 96 个
+   射线方向几乎不可能命中凸多边形截面的**尖角**，凸包把每个角斜切掉一块：
+   过锥尖三角形截面的两个底角各被削 2.270mm（解析面积 2150.813，凸包只有
+   2140.776，少 10.04mm² ≈ 0.47%）。放大视图约 14px/mm → 屏幕上是 ~30px 的
+   小楔形。修法：ρ(θ) 在角点方向取局部极大，对局部峰两侧区间做黄金分割搜索，
+   把角点精确找回（面积回到 2150.813、三个角点偏差全为 0）。
 
    跑法：node test2/solidcap.js
 */
@@ -37,7 +44,11 @@ check("存在 solidSectionRim2D（不依赖截交线参数公式）",
 check("solidSectionRim2D 跳过实验室占位体 / 空心圆柱（非凸不喂凸包）",
       /if\(SHAPES\[shape\]\.lab \|\| SHAPES\[shape\]\.hollow\) return \[\];/.test(HTML));
 check("solidSectionRim2D 用平面内射线 + 二分（insideCone 判体内）",
-      /for\(var it=0; it<24; it\+\+\)\{[\s\S]{0,240}insideCone\(P\)/.test(HTML));
+      /function radial\(th\)\{/.test(HTML) && /it<28; it\+\+/.test(HTML) &&
+      /insideCone\(P\)/.test(HTML));
+check("v33.34：对射线方向的局部峰做黄金分割角点精化",
+      /黄金分割/.test(HTML) && /0\.381966/.test(HTML) &&
+      /rho\[\(k-1\+K\)%K\]/.test(HTML));
 check("sectionPoly2D 调用 solidSectionRim2D",
       /var rim = solidSectionRim2D\(nv, d, B, 96\);/.test(HTML));
 check("只在原截面明显塌缩（面积差 >2%）时才替换，避免正常剖面顶点翻倍",
@@ -60,18 +71,39 @@ const degen = app.run(`(function(){
   var B=planeBasis(nv,d), rim=solidSectionRim2D(nv,d,B,96);
   var sp=sectionPoly2D(nv,d,96);
   function ar(poly){ var s=0; for(var i=0;i<poly.length;i++){var P=poly[i],Q=poly[(i+1)%poly.length];s+=P[0]*Q[1]-Q[0]*P[1];} return Math.abs(s)/2; }
+  /* v33.34：解析三角形 = 锥尖 + 底面弦两端（平面过锥尖时截面的真值） */
+  var yb=-H/2, zb=(d-nv.y*yb)/nv.z, xx=Math.sqrt(Math.max(0,R*R-zb*zb));
+  var tri2=[new THREE.Vector3(0,H/2,0), new THREE.Vector3(xx,yb,zb), new THREE.Vector3(-xx,yb,zb)]
+    .map(function(p){var q=p.clone().sub(B.O);return [q.dot(B.U),q.dot(B.V)];});
+  function dSeg(p,a,b){
+    var ux=b[0]-a[0],uy=b[1]-a[1],vx=p[0]-a[0],vy=p[1]-a[1];
+    var t=Math.max(0,Math.min(1,(vx*ux+vy*uy)/(ux*ux+uy*uy)));
+    return Math.hypot(vx-t*ux,vy-t*uy);
+  }
+  var maxDev=Math.max.apply(null,tri2.map(function(p){
+    var m=1e9;
+    for(var i=0;i<sp.poly.length;i++) m=Math.min(m,dSeg(p,sp.poly[i],sp.poly[(i+1)%sp.poly.length]));
+    return m;
+  }));
   return {n:pts.length,maxOff:maxOff,rimN:rim.length,
-          area:ar(sp.poly), polyN:sp.poly.length, d:d, nvy:nv.y};
+          area:ar(sp.poly), polyN:sp.poly.length, d:d, nvy:nv.y,
+          triA:ar(tri2), maxDev:maxDev};
 })()`);
 check("旧采样确实塌缩成锥尖一个点（对照组，验证根因）",
       degen.n > 50 && degen.maxOff < 1e-6, "n="+degen.n+" maxOff="+degen.maxOff.toExponential(2));
 check("d 精确等于 nv·apex（吸附到「过锥尖」的位置）",
       Math.abs(degen.d - degen.nvy*40) < 1e-9, "d="+degen.d.toFixed(6));
-check("solidSectionRim2D 给出 96 个精确边界点", degen.rimN === 96, "n="+degen.rimN);
+check("solidSectionRim2D 给出 96 个射线边界点 + 精化角点",
+      degen.rimN >= 96 && degen.rimN <= 110, "n="+degen.rimN);
 check("sectionPoly2D 面积从 0 恢复到有限值（>1000）",
       degen.area > 1000, "area="+degen.area.toFixed(1));
 check("退化截面多边形顶点数合理（未产生细长三角形爆炸）",
       degen.polyN >= 3 && degen.polyN <= 100, "n="+degen.polyN);
+check("v33.34：截面面积与解析三角形一致（不缺角）",
+      Math.abs(degen.area-degen.triA)/degen.triA < 0.002,
+      "got="+degen.area.toFixed(3)+" tri="+degen.triA.toFixed(3));
+check("v33.34：三个角点都落在截面边界上（削角 <0.02mm，修复前 2.27mm）",
+      degen.maxDev < 0.02, "maxDev="+degen.maxDev.toFixed(5)+"mm");
 
 /* ============ 三、用户场景精确复现 ============ */
 section("三、用户场景：圆锥 + 三个面 → 7 部分，逐块逐剖面验封盖");
