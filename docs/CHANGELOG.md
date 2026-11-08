@@ -1,6 +1,63 @@
 # 变更日志
 
-## v33.31（当前版本）
+## v33.32（当前版本）
+
+| 项 | 值 |
+|---|---|
+| 源码 | `src/index.html`（6,908 行 / 349,837 字节），md5 `67f55336202702953530458c2ba72f94` |
+| APK | `dist/cone-lab-v33.32.apk`，md5 `b6d02067d9c91bcd0b4fa92019ab37cf`，sha256 `97746ae8a4c14813b8bea16b70f229d31e858224f46ea7d333fea697844566c4`，3,536,419 字节 |
+| 基线 | v33.31（源码 `9cd74056…`，APK `75333e3c…`） |
+| 回归 | `node tests/runall.js` → **17 套件全过**（新增 `tests/snapmodel.js` 48 项） |
+
+优化**自动吸附**（用户需求）：
+> 1. 增加面与模型轮廓恰好相交时的自动吸附
+> 2. 增加模型与模型之间刚好接触时的自动吸附
+
+（确认后的范围：①「恰好相交」同时包含**轮廓临界位置**与**过轮廓特征点**；② 接触吸附同时作用于**拼装部件**与**相贯体**拖动。）
+
+### 旧版的两处空白
+
+- `buildTargets()` 只按**主立体**算目标（`rimPoints()` / `conicPoints()`）。实验室模式的主立体是
+  `H=1,R=1` 的占位体 → 拼装部件与相贯体从来不参与吸附，还会算出「过锥尖 / 与轮廓相切 ±1」这类**假目标**。
+- `partDrag` / `cylDrag` 只有 0.5mm 取整，**完全没有吸附**。
+
+### 修法（`src/index.html`）
+
+- 新增统一模型层 `snapModelList()`：主立体（非实验室）+ 每个启用部件 + 每个启用实体相贯体；
+  每个模型生成**世界坐标表面点云**（`partSurfaceCloud` 用 `insidePartLocal` 径向二分、
+  `cylSurfaceCloud` 用 `cylMargin` 径向二分，方向集为 Fibonacci 对称点 + 立方体角/棱/轴）。
+  贯穿打孔是"挖材料的刀具"，不作为模型；仅当它自己被拖动时可作为接触吸附的一方。
+- **拖面片**：`buildTargets()` 追加两类目标 ——
+  `modelEdge` = 沿面法向 `nv` 的 `min/max(nv·p)` 支撑平面（平面与轮廓恰好相交、截交线从无到有）；
+  `modelPoint` = 轮廓特征点（棱/顶点/端面圆周点，26 个典型方向的最外点，按 d 聚类、每模型最多 6 个，
+  两端成对取保证左右对称）。实验室跳过占位主立体的 apex/base/tangent/center 假目标。
+- **拖模型**：`snapContactPrepare()` 在拖动开始时一次算好**接触折线** ——
+  用分离轴 `SNAP_DIRS` 求两个点云凸包的有符号重叠深度
+  `pen(t) = min_d min(aHi_d + X·d − bLo_d, bHi_d − aLo_d − X·d)`，
+  `pen=0` 即刚好接触；在拖动平面里按 72 个方向求最外侧根，连成折线。
+  拖动中 `snapContactApply()` 只做「最近折线段投影 + 粘滞目标 + 平滑脱离」，每帧开销可忽略。
+  实测 6 模型场景：接触目标预计算 9ms、面片轮廓目标 7ms（Node）。
+- **顺带修老 bug**：旧脱离公式在 `SNAP_OFF` 处等于 `SNAP_OFF−SNAP_ON`，比手指位置少 2.8mm，
+  松手瞬间会跳一下。统一抽成 `snapEase(aa)`，面片与模型拖动共用，`aa=SNAP_OFF` 时恰好回到原位置。
+- 提示条、振动、绿色截线高亮清理、帮助文案同步；吸住时不再做 0.5mm 取整，保证接触位置精确。
+
+### 验证
+
+- 新增 `tests/snapmodel.js`（**48 项**）：源码级接线、实验室支撑平面 ±16 / 特征点、多模型、
+  三类模型清单、打孔排除、两圆柱接触面 x=20、粘滞/脱离/无跳变、正方体面贴面、
+  主立体作为伙伴、**真实 pointermove 事件流**拖部件与拖相贯体、性能上限。
+- `node tests/runall.js` → **17 套件全过**（主工程连跑 5 次、副本连跑 3 次）；`node --check` 通过。
+- 顺带修 `tests/pickfix.js` 18c 的既有 flaky 断言：它靠 `Math.random()` 采样出的 `cells`
+  碰运气找孔内块，偶尔找不到 → 假失败；改用确定点 `(5,5,0)` 解析孔块，压跑 12 次全 80/80。
+  只改测试，源码/APK 指纹不变。
+- 无头 Edge + swiftshader 实渲染：`__loadErr=null`，模型轮廓目标 [-6,-26,40,20] 与解析值一致，
+  提示条「已吸附：与部件1·圆柱刚好接触」正常显示：
+  [`docs/shots/v33.32-snap-smoke.png`](shots/v33.32-snap-smoke.png) /
+  [`docs/shots/v33.32-snap-contact-tip.png`](shots/v33.32-snap-contact-tip.png)。
+- 构建：`bash _env/build.sh 33.32`，v1+v2 双签 + apksigner 独立验签全过，
+  APK 内 `index.html` 与源码逐字节一致。
+
+## v33.31
 
 修**「实验室拼装 + 点选保留部分后仍中空（能透过模型看到里面）」**。
 

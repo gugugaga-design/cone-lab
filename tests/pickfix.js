@@ -1030,17 +1030,24 @@ check("双孔场景：材料块默认保留",
       plugUser.mat.every(function(r){ return r.sel; }),
       "材料块 " + plugUser.mat.length);
 
-/* 18c. 用户点过（pickSel 有记录）→ 尊重记录：点过的孔内块可以保持显示 */
+/* 18c. 用户点过（pickSel 有记录）→ 尊重记录：点过的孔内块可以保持显示。
+   ★ v33.32 修 flaky：旧写法在 cells 里"碰运气"找 sp.keep<0 的孔内块，
+     而 rebuildCells 的采样点用 Math.random() 生成，偶尔一个孔内块都不落进
+     cells（plugKey=null）→ 断言假失败。改为用确定点 Q(5,5,0) 解析孔块：
+     该点在两个孔内、不在侧平面上，与 18b 的 bothKey 同源，不受随机采样影响。 */
 const plugToggle = app.run(`(function(){
-  var plugKey = null;
-  cells.forEach(function(c){
-    var sp = c.cyls && c.cyls[0];
-    if(!plugKey && sp && sp.keep < 0) plugKey = c.key;
-  });
-  pickSel[plugKey] = true;
+  var Q = new THREE.Vector3(5,5,0);
+  var bare = cellKeyAt(Q, activeFaceData(), activeCyls(), activeParts());
+  var act = bare ? resolveToActualCellKey(bare, Q) : null;
+  if(!act) return { found:false, sel:null, bare:bare };
+  pickSel[act] = true;
+  if(bare !== act) pickSel[bare] = true;      // 同时兼容 bare key（selInherit 按 bare 查）
   rebuildCells();
-  var c = cellOfKey(plugKey);
-  return { found: !!c, sel: c ? c.sel !== false : null };
+  /* 重建后随机采样可能改变连通分量的 # 后缀 → 在同一确定点重新解析块 */
+  var bare2 = cellKeyAt(Q, activeFaceData(), activeCyls(), activeParts());
+  var act2 = bare2 ? resolveToActualCellKey(bare2, Q) : null;
+  var c = (act2 && cellOfKey(act2)) || cellOfKey(act);
+  return { found: !!c, sel: c ? c.sel !== false : null, bare:bare, act:act, act2:act2 };
 })()`);
 check("点过的孔内块尊重用户记录（可显示回来）",
       plugToggle.found && plugToggle.sel === true, JSON.stringify(plugToggle));

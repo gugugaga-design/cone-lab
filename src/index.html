@@ -420,7 +420,9 @@
       说明：正平面∥V、水平面∥H、侧平面∥W；正垂面⊥V、铅垂面⊥H、侧垂面⊥W（角度=与水平面的夹角，
       铅垂面角度=与侧立面W的夹角）。左右= X(+右)、高低= Y(+上)、前后= Z(+前)，单位 mm。
       直接拖住彩色面片可沿法向平移；与其他平行面靠近共面位置会自动吸合（继续拖远即平滑脱离，不会卡住），
-      也可吸附"过锥尖"、"底面所在平面"两个特殊位置（顶部提示条会说明吸到了哪）。
+      也可吸附"过锥尖"、"底面所在平面"等特殊位置；<b>面与任一模型（主立体 / 拼装部件 / 相贯体）的轮廓
+      恰好相交，或正好经过模型的轮廓特征点（棱、顶点、端面圆周）时也会吸附</b>。
+      <b>拖动拼装部件 / 相贯体时，与其它模型刚好接触（相切不重叠）同样会自动吸附</b>（顶部提示条说明吸到了哪）。
       "点选保留部分"：立体被启用的面分成几个部分时，直接点 3D 里想保留的部分之外的部分（变暗），即可只留想要的。
       <br>贯穿圆：和面一样分正平面/正垂面/水平面/铅垂面/侧平面/侧垂面六种——圆柱的轴就是该类型面的法向，
       沿轴无限贯穿＝一个无限长圆柱（例：水平面型的贯穿圆＝竖直打孔）；它和面一样会把立体分开，
@@ -5148,6 +5150,294 @@ function rimPoints(){
   }
   return pts;
 }
+/* ==================================================================
+   v33.32 自动吸附扩展：模型轮廓 + 模型间接触
+   ------------------------------------------------------------------
+   旧版吸附只认"主立体"：buildTargets 用 rimPoints()/conicPoints() 算目标，
+   实验室模式（SHAPES.lab 是 H=1,R=1 的占位体）里部件/相贯体完全不参与；
+   partDrag / cylDrag 更是一点吸附都没有（只做 0.5mm 取整）。
+   这里把"模型"统一成：主立体(非实验室) + 每个启用部件 + 每个启用实体相贯体。
+   每个模型提供一份**世界坐标表面点云**，由此得到两类新吸附：
+     · 拖面片：沿法向 nv 的支撑平面 min/max(nv·p) = 面与模型轮廓"恰好相交"
+       的临界位置（再挪一点就切不到 / 截交线刚出现）；以及轮廓特征点 nv·p
+       （棱点、顶点、端面圆周点等，截交线在此发生转折的位置）。
+     · 拖模型：用分离轴 SNAP_DIRS 判两个点云凸包是否重叠，pen(t)=0 的位置
+       就是"刚好接触"，按 SNAP_ON/SNAP_OFF 连续吸合与脱离。
+   ★ 贯穿打孔(c.hole)是"挖材料的刀具"，不是模型 → 不进接触伙伴。
+   ================================================================== */
+function snapFibDirs(n){
+  /* 严格成对取反，保证点云关于中心对称（否则圆柱左右两侧的轮廓特征点
+     会一边有、一边没有，吸附目标看起来莫名其妙）。 */
+  var a = [], ga = Math.PI*(3-Math.sqrt(5)), i, m = Math.max(1, Math.floor(n/2));
+  for(i=0;i<m;i++){
+    var y = 1 - 2*(i+0.5)/m, r = Math.sqrt(Math.max(0,1-y*y)), th = ga*i;
+    var v = new THREE.Vector3(Math.cos(th)*r, y, Math.sin(th)*r);
+    a.push(v); a.push(v.clone().negate());
+  }
+  return a;
+}
+/* 径向撒点方向：均匀球面 + 立方体角/棱/轴（盒子的角点必须精确命中，
+   否则沿斜法向的支撑平面会偏几毫米） */
+var SNAP_RAY_DIRS = (function(){
+  var a = snapFibDirs(96), i, j, k;
+  for(i=-1;i<=1;i+=2) for(j=-1;j<=1;j+=2) for(k=-1;k<=1;k+=2)
+    a.push(new THREE.Vector3(i,j,k).normalize());
+  for(i=-1;i<=1;i+=2) for(j=-1;j<=1;j+=2){
+    a.push(new THREE.Vector3(i,j,0).normalize());
+    a.push(new THREE.Vector3(i,0,j).normalize());
+    a.push(new THREE.Vector3(0,i,j).normalize());
+  }
+  [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]].forEach(function(v){
+    a.push(new THREE.Vector3(v[0],v[1],v[2]));
+  });
+  return a;
+})();
+/* 分离轴（两个凸体是否重叠的 SAT 近似）：均匀球面 + 轴/面对角/体对角 */
+var SNAP_DIRS = snapFibDirs(40).concat([
+  new THREE.Vector3(1,0,0), new THREE.Vector3(0,1,0), new THREE.Vector3(0,0,1),
+  new THREE.Vector3(1,1,0).normalize(), new THREE.Vector3(1,-1,0).normalize(),
+  new THREE.Vector3(1,0,1).normalize(), new THREE.Vector3(1,0,-1).normalize(),
+  new THREE.Vector3(0,1,1).normalize(), new THREE.Vector3(0,1,-1).normalize(),
+  new THREE.Vector3(1,1,1).normalize(), new THREE.Vector3(1,1,-1).normalize(),
+  new THREE.Vector3(1,-1,1).normalize(), new THREE.Vector3(1,-1,-1).normalize()
+]);
+/* 轮廓特征点方向：26 个典型方向（轴 / 面对角 / 体对角） */
+var SNAP_FEAT_DIRS = (function(){
+  var a=[], i, j, k;
+  for(i=-1;i<=1;i++) for(j=-1;j<=1;j++) for(k=-1;k<=1;k++){
+    if(!i && !j && !k) continue;
+    a.push(new THREE.Vector3(i,j,k).normalize());
+  }
+  return a;
+})();
+function snapPartName(pr){
+  for(var i=0;i<PARTS.length;i++) if(PARTS[i].k === pr.k) return PARTS[i].name;
+  return pr.k;
+}
+function snapCloudLimit(pr){
+  var m = Math.max(pr.r||0, pr.rt||0, pr.h||0, pr.w||0, pr.d||0, pr.a||0, 10);
+  return m*2.6 + 8;
+}
+/* 部件表面点云：从体内一点沿各方向二分到边界（凸体精确，槽/半球等非凸
+   体是"星形包络"近似，吸附容差 2.8mm 下够用），再乘部件的世界矩阵。 */
+function partSurfaceCloud(pr){
+  var M = partMatrix(pr), out = [], seed = null, i;
+  var cands = [
+    new THREE.Vector3(0,0,0),
+    new THREE.Vector3(0,-(pr.h||pr.a||20)/4,0),
+    new THREE.Vector3(0, (pr.h||pr.a||20)/4,0),
+    new THREE.Vector3(0,-Math.max(3,(pr.r||pr.w||20)/2)*0.7,0),
+    new THREE.Vector3(0, Math.max(3,(pr.r||pr.w||20)/2)*0.7,0)
+  ];
+  for(i=0;i<cands.length;i++){
+    try{ if(insidePartLocal(pr, cands[i])){ seed = cands[i]; break; } }catch(_){ }
+  }
+  if(!seed) return out;
+  var lim = snapCloudLimit(pr);
+  for(i=0;i<SNAP_RAY_DIRS.length;i++){
+    var d = SNAP_RAY_DIRS[i], lo = 0, hi = lim, it;
+    for(it=0; it<20; it++){
+      var mid = (lo+hi)/2;
+      if(insidePartLocal(pr, seed.clone().addScaledVector(d, mid))) lo = mid; else hi = mid;
+    }
+    out.push(seed.clone().addScaledVector(d, (lo+hi)/2).applyMatrix4(M));
+  }
+  return out;
+}
+/* 相贯体表面点云：用 cylMargin（与分块/着色器同一判据）做同样的径向二分 */
+function cylSurfaceCloud(c){
+  var P = cylPoint(c), ax = cylAxis(c), B = cylBasis(ax), out = [];
+  var rr = c.r || c.w || 16, hl = (c.len > 0 ? c.len/2 : 48);
+  var cands = [P.clone(),
+               P.clone().addScaledVector(ax, hl*0.4), P.clone().addScaledVector(ax,-hl*0.4),
+               P.clone().addScaledVector(B.U, rr*0.5), P.clone().addScaledVector(B.U,-rr*0.5),
+               P.clone().addScaledVector(B.V, rr*0.5), P.clone().addScaledVector(B.V,-rr*0.5),
+               P.clone().addScaledVector(ax, hl*0.4).addScaledVector(B.V,-rr*0.6)], seed = null, i;
+  for(i=0;i<cands.length;i++){
+    try{ if(cylMargin(c, cands[i]) > 0.2){ seed = cands[i]; break; } }catch(_){ }
+  }
+  if(!seed) return out;
+  var lim = Math.max(40, hl*2 + rr*2 + 20);
+  for(i=0;i<SNAP_RAY_DIRS.length;i++){
+    var d = SNAP_RAY_DIRS[i], lo = 0, hi = lim, it;
+    for(it=0; it<20; it++){
+      var mid = (lo+hi)/2;
+      if(cylMargin(c, seed.clone().addScaledVector(d, mid)) > 0) lo = mid; else hi = mid;
+    }
+    out.push(seed.clone().addScaledVector(d, (lo+hi)/2));
+  }
+  return out;
+}
+/* 统一模型清单。注意：实验室没有主立体，只返回部件/相贯体 —— 这正是
+   v33.31 用户场景里"面怎么拖都没吸附"的根因。 */
+function snapModelList(){
+  var out = [], S = SHAPES[shape];
+  if(!S.lab){
+    out.push({kind:"main", idx:-1, label:S.short, center:new THREE.Vector3(0,0,0),
+              pts:rimPoints(), isModel:true});
+  }
+  parts.forEach(function(pr, i){
+    if(pr.on === false) return;
+    out.push({kind:"part", idx:i, ref:pr, label:"部件"+(i+1)+"·"+snapPartName(pr),
+              center:new THREE.Vector3(pr.x,pr.y,pr.z), pts:partSurfaceCloud(pr), isModel:true});
+  });
+  cyls.forEach(function(c, i){
+    if(!c.on) return;
+    out.push({kind:"cyl", idx:i, ref:c, label:"相贯体"+(i+1)+"·"+(CUT_SHAPE_NAME[c.shape]||"实体"),
+              center:cylPoint(c), pts:cylSurfaceCloud(c), isModel:!c.hole, hole:!!c.hole});
+  });
+  return out;
+}
+/* 点云沿各分离轴的支撑值（相对模型中心存，平移时只加 d·center） */
+function snapCloudSupport(pts, D, center){
+  var lo = [], hi = [], k, i;
+  for(k=0;k<D.length;k++){
+    var d = D[k], mn = 1e18, mx = -1e18, cd = d.dot(center);
+    for(i=0;i<pts.length;i++){
+      var s = d.x*pts[i].x + d.y*pts[i].y + d.z*pts[i].z;
+      if(s < mn) mn = s;
+      if(s > mx) mx = s;
+    }
+    if(mn > mx){ mn = mx = cd; }
+    lo.push(mn-cd); hi.push(mx-cd);
+  }
+  return {lo:lo, hi:hi};
+}
+/* 从点云取"轮廓特征点"：各典型方向上最外的那个点（=棱/顶点/端面圆周点） */
+function snapFeaturePoints(pts){
+  var out = [];
+  SNAP_FEAT_DIRS.forEach(function(d){
+    var best = null, bs = -1e18;
+    for(var i=0;i<pts.length;i++){
+      var s = d.x*pts[i].x + d.y*pts[i].y + d.z*pts[i].z;
+      if(s > bs){ bs = s; best = pts[i]; }
+    }
+    if(best) out.push(best);
+  });
+  return out;
+}
+/* ---- 模型间"刚好接触"：分离轴重叠深度 pen(t) ----
+   A 的中心在 X，B 固定。pen>0 视为重叠，pen=0 即刚好相切接触。 */
+function snapPenT(A, B, sd0, dw, t){
+  var p = 1e18;
+  for(var k=0;k<sd0.length;k++){
+    var sd = sd0[k] + t*dw[k];
+    var m1 = A.hi[k] + sd - B.loW[k];
+    var m2 = B.hiW[k] - A.lo[k] - sd;
+    var mm = m1 < m2 ? m1 : m2;
+    if(mm < p) p = mm;
+  }
+  return p;
+}
+/* 沿射线 X0+t·w 找最外侧的 pen=0 根（从远处靠近时的第一接触位置） */
+function snapContactOuterRoot(A, B, sd0, dw, L){
+  var NS = 48, step = L/NS, prevT = 0, prevP = snapPenT(A,B,sd0,dw,0), root = null, s, it;
+  for(s=1;s<=NS;s++){
+    var t = s*step, p = snapPenT(A,B,sd0,dw,t);
+    if(prevP > 0 && p <= 0){
+      var lo = prevT, hi = t;
+      for(it=0; it<22; it++){
+        var mid = (lo+hi)/2;
+        if(snapPenT(A,B,sd0,dw,mid) > 0) lo = mid; else hi = mid;
+      }
+      root = (lo+hi)/2;
+    }
+    prevT = t; prevP = p;
+  }
+  return root;
+}
+/* 拖动开始时一次算好接触边界：每个伙伴模型在拖动平面里围出一条闭合
+   "接触曲线"（72 段折线），拖动时只做投影，不重算几何。 */
+function snapContactPrepare(anchor, planeNrm, skipKey){
+  var D = SNAP_DIRS, models = snapModelList(), A = null, partners = [], k;
+  models.forEach(function(m){
+    if(!m.pts || !m.pts.length) return;
+    var s = snapCloudSupport(m.pts, D, m.center);
+    var it = {label:m.label, lo:s.lo, hi:s.hi, center:m.center,
+              loW:[], hiW:[], isModel:m.isModel !== false, segs:[], pts:[]};
+    for(k=0;k<D.length;k++){
+      var cd = D[k].dot(m.center);
+      it.loW.push(s.lo[k]+cd); it.hiW.push(s.hi[k]+cd);
+    }
+    if((m.kind+":"+m.idx) === skipKey) A = it;
+    else if(it.isModel) partners.push(it);
+  });
+  if(!A) return null;
+  var n = planeNrm.clone().normalize();
+  var e1 = new THREE.Vector3(1,0,0);
+  if(Math.abs(e1.dot(n)) > 0.9) e1.set(0,1,0);
+  e1.addScaledVector(n, -e1.dot(n)).normalize();
+  var e2 = new THREE.Vector3().crossVectors(n, e1).normalize();
+  var L = 260, NSEG = 72, j;
+  partners.forEach(function(B){
+    var X0 = B.center.clone().addScaledVector(n, anchor.clone().sub(B.center).dot(n));
+    var pts = [];
+    for(j=0;j<NSEG;j++){
+      var th = j/NSEG*Math.PI*2;
+      var w = e1.clone().multiplyScalar(Math.cos(th)).addScaledVector(e2, Math.sin(th));
+      var sd0 = [], dw = [];
+      for(k=0;k<D.length;k++){ sd0.push(D[k].dot(X0)); dw.push(D[k].dot(w)); }
+      var t = snapContactOuterRoot(A, B, sd0, dw, L);
+      pts.push(t == null ? null : X0.clone().addScaledVector(w, t));
+    }
+    B.pts = [];
+    for(j=0;j<NSEG;j++){
+      var p0 = pts[j], p1 = pts[(j+1)%NSEG];
+      if(p0) B.pts.push(p0);
+      if(p0 && p1 && p0.distanceTo(p1) < 60) B.segs.push([p0,p1]);
+    }
+  });
+  return {D:D, A:A, partners:partners, tgt:null};
+}
+function snapNearestOnSeg(P, A, B){
+  var ab = B.clone().sub(A), l2 = ab.lengthSq();
+  if(l2 < 1e-9) return A.clone();
+  var t = P.clone().sub(A).dot(ab)/l2;
+  t = Math.max(0, Math.min(1, t));
+  return A.clone().addScaledVector(ab, t);
+}
+function snapContactNearest(raw, ctx){
+  var best = null, bd = 1e18;
+  ctx.partners.forEach(function(B){
+    B.segs.forEach(function(sg){
+      var p = snapNearestOnSeg(raw, sg[0], sg[1]), d = p.distanceTo(raw);
+      if(d < bd){ bd = d; best = {p:p, label:B.label}; }
+    });
+    B.pts.forEach(function(p){
+      var d = p.distanceTo(raw);
+      if(d < bd){ bd = d; best = {p:p, label:B.label}; }
+    });
+  });
+  return best ? {p:best.p, d:bd, label:best.label} : null;
+}
+/* 吸合/脱离曲线：aa<=ON 完全贴合；ON<aa<OFF 渐进脱离；aa=OFF 恰好回到
+   手指位置（旧版这里差一个 SNAP_ON，松手瞬间会跳 2.8mm，本版一并修掉）。 */
+function snapEase(aa){
+  if(aa <= SNAP_ON) return 0;
+  if(aa >= SNAP_OFF) return aa;
+  return SNAP_ON + (aa-SNAP_ON)*(aa-SNAP_ON)/(SNAP_OFF-SNAP_ON);
+}
+/* 拖动中：目标位置固定不漂移，吸住后按距离平滑脱离（与拖面片同一手感） */
+function snapContactApply(raw, ctx){
+  var tgt = ctx.tgt;
+  if(tgt){
+    var aa = raw.distanceTo(tgt.p);
+    if(aa > SNAP_OFF){
+      ctx.tgt = null; hideSnapTip();
+    } else {
+      var k = snapEase(aa)/Math.max(aa, 1e-6);
+      return {pos:tgt.p.clone().lerp(raw, k), snapped:true, label:tgt.label, aa:aa};
+    }
+  }
+  var near = snapContactNearest(raw, ctx);
+  if(near && near.d <= SNAP_ON){
+    ctx.tgt = {p:near.p.clone(), label:near.label};
+    showSnapTip("已吸附：与" + near.label + "刚好接触");
+    try{ navigator.vibrate && navigator.vibrate(12); }catch(_){}
+    return {pos:near.p.clone(), snapped:true, label:near.label, aa:near.d};
+  }
+  return {pos:raw, snapped:false, aa:near ? near.d : -1};
+}
 /* 吸附目标（拖动开始时算好，位置固定不漂移）：
    1) 与其他启用面共面
    2) 与某一面关于（过立体中心的）轴对称
@@ -5189,29 +5479,74 @@ function buildTargets(i){
     }
   });
   var S = SHAPES[shape];
-  var apexY = flipped ? -H/2 : H/2, baseY = flipped ? H/2 : -H/2;
-  if(S.apex !== false){
-    pushT({kind:"apex", src:-1, d: nv.y*apexY, label:(shape === "hemi" ? "过顶点" : "过锥尖")});
+  /* v33.32：实验室没有主立体（SHAPES.lab 只是 H=1,R=1 的占位体）。
+     以前照样按占位体算出"过锥尖 / 与轮廓相切 ±1 / 底面"等目标 —— 全是假吸附点，
+     还会把部件轮廓的真目标挤掉。现在实验室只由下面的 snapModelList() 给目标。 */
+  if(!S.lab){
+    var apexY = flipped ? -H/2 : H/2, baseY = flipped ? H/2 : -H/2;
+    if(S.apex !== false){
+      pushT({kind:"apex", src:-1, d: nv.y*apexY, label:(shape === "hemi" ? "过顶点" : "过锥尖")});
+    }
+    if(Math.abs(nv.y) > 0.9){
+      pushT({kind:"base", src:-1, d: nv.y*baseY, label:"底面所在平面"});
+      if(S.topFace) pushT({kind:"top", src:-1, d: nv.y*apexY, label:"顶面所在平面"});
+    }
+    if(S.lying && Math.abs(nv.z) > 0.9){
+      pushT({kind:"end", src:-1, d: nv.z*(H/2), label:"右端面所在平面"});
+      pushT({kind:"end", src:-1, d: nv.z*(-H/2), label:"左端面所在平面"});
+    }
+    // 过立体中心（所有立体都对原点中心对称 → 平面过原点即过中心）
+    pushT({kind:"center", src:-1, d: 0, label:"过立体中心"});
+    // 与外轮廓相切：平面扫到最外/最里，截线退化成一个点
+    var rp = rimPoints(), mn = 1e9, mx = -1e9;
+    rp.forEach(function(P){
+      var s = nv.x*P.x + nv.y*P.y + nv.z*P.z;
+      if(s < mn) mn = s;
+      if(s > mx) mx = s;
+    });
+    pushT({kind:"tangent", src:-1, d: mx, label:"与轮廓相切"});
+    pushT({kind:"tangent", src:-1, d: mn, label:"与轮廓相切"});
   }
-  if(Math.abs(nv.y) > 0.9){
-    pushT({kind:"base", src:-1, d: nv.y*baseY, label:"底面所在平面"});
-    if(S.topFace) pushT({kind:"top", src:-1, d: nv.y*apexY, label:"顶面所在平面"});
-  }
-  if(S.lying && Math.abs(nv.z) > 0.9){
-    pushT({kind:"end", src:-1, d: nv.z*(H/2), label:"右端面所在平面"});
-    pushT({kind:"end", src:-1, d: nv.z*(-H/2), label:"左端面所在平面"});
-  }
-  // 过立体中心（所有立体都对原点中心对称 → 平面过原点即过中心）
-  pushT({kind:"center", src:-1, d: 0, label:"过立体中心"});
-  // 与外轮廓相切：平面扫到最外/最里，截线退化成一个点
-  var rp = rimPoints(), mn = 1e9, mx = -1e9;
-  rp.forEach(function(P){
-    var s = nv.x*P.x + nv.y*P.y + nv.z*P.z;
-    if(s < mn) mn = s;
-    if(s > mx) mx = s;
+  /* v33.32：面与"每个模型"的轮廓恰好相交（旧版只有主立体那两个相切位置）。
+     ① 支撑平面 min/max(nv·p)：平面扫到模型轮廓的临界位置，截交线从无到有；
+     ② 轮廓特征点（棱/顶点/端面圆周点）：截面刚好经过轮廓转折点。
+     目标按 d 去重、每模型特征点最多 6 个，避免吸附点过密导致"拖不动"。
+     实验室没有主立体，这里就是唯一能给出轮廓吸附的地方。 */
+  var models = snapModelList();
+  models.forEach(function(m){
+    /* 贯穿打孔是"挖掉材料"的刀具：无限长孔的轮廓会算出假吸附点，跳过。
+       （但用户正在拖这个孔时，仍可作为接触吸附的 A，见 snapContactPrepare） */
+    if(m.hole || !m.pts || !m.pts.length) return;
+    var mn2 = 1e18, mx2 = -1e18, q;
+    for(q=0;q<m.pts.length;q++){
+      var s2 = nv.x*m.pts[q].x + nv.y*m.pts[q].y + nv.z*m.pts[q].z;
+      if(s2 < mn2) mn2 = s2;
+      if(s2 > mx2) mx2 = s2;
+    }
+    if(mn2 > mx2) return;
+    pushT({kind:"modelEdge", src:-1, d:mx2, label:"与"+m.label+"轮廓恰好相交"});
+    pushT({kind:"modelEdge", src:-1, d:mn2, label:"与"+m.label+"轮廓恰好相交"});
+    var ds = snapFeaturePoints(m.pts).map(function(P){
+      return nv.x*P.x + nv.y*P.y + nv.z*P.z;
+    }).sort(function(a,b){ return a-b; });
+    var clusters = [];
+    ds.forEach(function(d0){
+      if(!clusters.length || d0-clusters[clusters.length-1] > 1.8) clusters.push(d0);
+    });
+    /* 从两端成对取，保证左右/上下对称（等间隔抽样会挑出一边多一边少的目标） */
+    var chosen = [], FEAT_MAX = 6, cl = 0, ch = clusters.length-1;
+    while(chosen.length < FEAT_MAX && cl <= ch){
+      chosen.push(clusters[cl]);
+      if(chosen.length < FEAT_MAX && ch !== cl) chosen.push(clusters[ch]);
+      cl++; ch--;
+    }
+    chosen.forEach(function(d0){
+      var dup = false;
+      for(var ti=0;ti<ts.length;ti++) if(Math.abs(ts[ti].d-d0) < 1.8){ dup = true; break; }
+      if(dup) return;
+      pushT({kind:"modelPoint", src:-1, d:d0, label:"过"+m.label+"轮廓特征点"});
+    });
   });
-  pushT({kind:"tangent", src:-1, d: mx, label:"与轮廓相切"});
-  pushT({kind:"tangent", src:-1, d: mn, label:"与轮廓相切"});
   return ts;
 }
 function ndcFromEvent(e){
@@ -5282,6 +5617,7 @@ function setCylHighlightVisible(on){
 function endDrag(){
   if(partDrag){
     partDrag = null;
+    hideSnapTip();          // v33.32：清掉"与…刚好接触"提示条
     controls.enabled = true;
     renderPartList();
     buildParts();
@@ -5294,6 +5630,7 @@ function endDrag(){
   }
   if(cylDrag){
     cylDrag = null;
+    hideSnapTip();          // v33.32：清掉"与…刚好接触"提示条
     controls.enabled = true;
     cellsDirty = true;
     renderCylList();      // 把拖动结果写回输入框
@@ -5762,11 +6099,18 @@ function attachDrag(){
         cylDrag = {ci:pendingCyl.ci, p0:pendingCyl.p0, x0:pendingCyl.x0, y0:pendingCyl.y0,
                    z0:pendingCyl.z0, nrm:pendingCyl.nrm, moved:true,
                    sx:pendingCyl.sx, sy:pendingCyl.sy};
+        /* v33.32：拖相贯体时也算好"与其它模型刚好接触"的位置（只算一次） */
+        try{ cylDrag.snap = snapContactPrepare(
+               new THREE.Vector3(cylDrag.x0, cylDrag.y0, cylDrag.z0),
+               cylDrag.nrm, "cyl:"+cylDrag.ci); }catch(_){ cylDrag.snap = null; }
         pendingCyl = null;
       } else {
         partDrag = {pi:pendingPart.pi, p0:pendingPart.p0, o0:pendingPart.o0,
                     nrm:pendingPart.nrm, moved:true,
                     sx:pendingPart.sx, sy:pendingPart.sy};
+        /* v33.32：拖拼装部件时同样算好接触目标 */
+        try{ partDrag.snap = snapContactPrepare(partDrag.o0, partDrag.nrm,
+                                                "part:"+partDrag.pi); }catch(_){ partDrag.snap = null; }
         pendingPart = null;
       }
       controls.enabled = false;
@@ -5780,9 +6124,17 @@ function attachDrag(){
       if(raycaster.ray.intersectPlane(plP, qP)){
         var dvP = qP.clone().sub(partDrag.p0);
         var pr3 = parts[partDrag.pi];
-        pr3.x = Math.round((partDrag.o0.x + dvP.x)*2)/2;
-        pr3.y = Math.round((partDrag.o0.y + dvP.y)*2)/2;
-        pr3.z = Math.round((partDrag.o0.z + dvP.z)*2)/2;
+        var rawP = partDrag.o0.clone().add(dvP);
+        /* v33.32 模型间接触吸附：靠近"刚好接触"位置就吸住，
+           吸住时不再做 0.5mm 取整，保证接触是精确的（否则会差 0.25mm）。 */
+        var rsP = partDrag.snap ? snapContactApply(rawP, partDrag.snap) : null;
+        var posP = (rsP && rsP.snapped) ? rsP.pos : rawP;
+        if(rsP && rsP.snapped){ pr3.x = posP.x; pr3.y = posP.y; pr3.z = posP.z; }
+        else {
+          pr3.x = Math.round(posP.x*2)/2;
+          pr3.y = Math.round(posP.y*2)/2;
+          pr3.z = Math.round(posP.z*2)/2;
+        }
         partDrag.moved = true;
         /* v33.19（用户反馈"拖动时有时候会卡"的根因）：
            这里原来是 rebuildCells() → buildParts()。
@@ -5807,9 +6159,16 @@ function attachDrag(){
       var dv = q2.clone().sub(cylDrag.p0);
       var c2 = cyls[cylDrag.ci];
       // 直拖：圆心在圆面内平移（世界坐标，与面一致——贯穿圆不随倒放镜像）
-      c2.x = Math.round((cylDrag.x0 + dv.x)*2)/2;      // 0.5mm 步进，手感更稳
-      c2.y = Math.round((cylDrag.y0 + dv.y)*2)/2;
-      c2.z = Math.round((cylDrag.z0 + dv.z)*2)/2;
+      var rawC = new THREE.Vector3(cylDrag.x0+dv.x, cylDrag.y0+dv.y, cylDrag.z0+dv.z);
+      /* v33.32：相贯体也参与"与其它模型刚好接触"的吸附 */
+      var rsC = cylDrag.snap ? snapContactApply(rawC, cylDrag.snap) : null;
+      var posC = (rsC && rsC.snapped) ? rsC.pos : rawC;
+      if(rsC && rsC.snapped){ c2.x = posC.x; c2.y = posC.y; c2.z = posC.z; }
+      else {
+        c2.x = Math.round(posC.x*2)/2;      // 0.5mm 步进，手感更稳
+        c2.y = Math.round(posC.y*2)/2;
+        c2.z = Math.round(posC.z*2)/2;
+      }
       cylDrag.moved = true;
       buildCylVis(true);      // 拖动中先不算相贯线（拖动结束 refresh 时补上），保证跟手
       applyClipping();
@@ -5841,7 +6200,10 @@ function attachDrag(){
       });
       if(best){
         drag.tgt = tgt = best;
+        /* v33.32：换成非截线类目标（模型轮廓/特征点）时清掉旧的黄色高亮，
+           否则绿色会一直挂在上一根截线上。 */
         if(tgt.kind === "face" || tgt.kind === "curve") setCurveHi(drag.lines, tgt.src, true);
+        else setCurveHi(drag.lines, null, false);
         showSnapTip("已吸附：" + (tgt.kind === "face"
           ? ("与面" + (tgt.src+1) + " " + tgt.label + " 共面")
           : tgt.kind === "curve"
@@ -5854,9 +6216,10 @@ function attachDrag(){
     }
     var dCur = dRaw;
     if(tgt){
+      /* v33.32：统一用 snapEase —— 旧公式在 SNAP_OFF 处等于 SNAP_OFF-SNAP_ON，
+         比 dRaw 少了 SNAP_ON，松手瞬间会跳 2.8mm；现在 aa=SNAP_OFF 时恰好=dRaw。 */
       var off = dRaw - tgt.d, sgn = off < 0 ? -1 : 1, aa = Math.abs(off);
-      if(aa <= SNAP_ON) dCur = tgt.d;                                       // 吸合：精确贴到目标
-      else dCur = tgt.d + sgn*(aa-SNAP_ON)*(aa-SNAP_ON)/(SNAP_OFF-SNAP_ON);  // 渐进脱离；SNAP_OFF 处=dRaw，无跳变
+      dCur = tgt.d + sgn*snapEase(aa);                                      // 吸合/平滑脱离，无跳变
     }
     var f = faces[drag.i];
     var dOld = faceConst(f, drag.nv);
