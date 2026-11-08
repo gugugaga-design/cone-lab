@@ -857,9 +857,9 @@ function negPlane(p){ return new THREE.Plane().copy(p).negate(); }
 /* 交集是否为空：在锥体内采样，看是否存在同时满足所有平面 (n·p-d>=0) 的点。
    注意：真正的“共同块”对每个面都应取法向侧；若用户把面拖到法向都背离锥体，
    交集就是空的——此时必须明确提示，而不是让锥体整体消失。 */
-function interIsEmpty(posP){
+function interIsEmpty(posP, act){
   if(!posP.length) return false;
-  var pts = samplePoints(activeFaceData());
+  var pts = samplePoints(act || activeFaceData());
   for(var i=0; i<pts.length; i++){
     var p = pts[i], ok = true;
     for(var j=0; j<posP.length; j++){
@@ -870,9 +870,13 @@ function interIsEmpty(posP){
   return true;
 }
 function applyClipping(){
+  /* v33.35：activeFaceData()/activeCyls() 各会过滤+排序+分配一次 id，
+     旧版在这一个函数里最多各调 3 次（拖动时每次 pointermove 都会跑）。
+     统一取一次，向下传给 interIsEmpty / buildInterCaps。 */
+  var actF = activeFaceData(), acy = activeCyls();
   var act = faces.filter(function(f){ return f.on; });
   var posP = act.map(worldPlane);
-  var empty = (mode === "inter" && act.length) ? interIsEmpty(posP) : false;
+  var empty = (mode === "inter" && act.length) ? interIsEmpty(posP, actF) : false;
   var planes = (mode==="inter" && act.length && !empty) ? posP : [];
   if(mode === "inter" && act.length){
     if(empty) snapTipText("交集为空：这些面没有共同围出锥体的同一块，请调整面位置/朝向", 2600);
@@ -896,7 +900,7 @@ function applyClipping(){
   /* "点选保留部分"模式整体替换为分块网格，基础锥体隐藏。
      v28：但如果一个面/贯穿体都没有（没什么可分的），分块是空的 ——
      这时必须把本体显示出来，否则切到点选模式（或撤销回到"什么都没加"的状态）画面就是一片空白。 */
-  var canSplit = activeFaceData().length > 0 || activeCyls().length > 0;
+  var canSplit = actF.length > 0 || acy.length > 0;
   coneF.visible = coneB.visible = (mode !== "pick") || !canSplit;
   /* 贯穿体对"基础网格"的裁剪（v23 修正 —— 用户反馈"打孔后模型消失 / 不出孔"）：
      · 打孔 c.hole：孔是**挖掉**的，所以要保留"孔外"（keep=+1）。
@@ -906,11 +910,11 @@ function applyClipping(){
      · 实体相贯 !c.hole：语义不变 —— 显示全部不裁；只显示交集保留孔内（-1）＝各切割体共同围出的那块。 */
   var specsBase;
   if(mode === "inter"){
-    specsBase = activeCyls().map(function(c){ return cylSpecOf(c, c.hole ? 1 : -1); });
+    specsBase = acy.map(function(c){ return cylSpecOf(c, c.hole ? 1 : -1); });
   } else {
     // 打孔在任何模式下都要把孔挖出来，否则"不出孔"
-    specsBase = activeCyls().filter(function(c){ return c.hole; })
-                           .map(function(c){ return cylSpecOf(c, 1); });
+    specsBase = acy.filter(function(c){ return c.hole; })
+                   .map(function(c){ return cylSpecOf(c, 1); });
   }
   setCylSpecs(matFront, specsBase);
   setCylSpecs(matBack,  specsBase);
@@ -918,7 +922,7 @@ function applyClipping(){
   faceVis.forEach(function(v){
     if(v) setCylSpecs(v.mesh.material, specsBase);
   });
-  buildInterCaps(empty);
+  buildInterCaps(empty, actF, acy);
 }
 /* "只显示交集"模式同样要给切面封盖，否则看上去内部是空的 */
 var interCapGroup = null;
@@ -934,16 +938,16 @@ function withBoreCapSpec(specs){
     hw:0, hh:0, code:1, len:0, bt0:0, bt1:0, bOn:0
   }]);
 }
-function buildInterCaps(empty){
+function buildInterCaps(empty, actF, acy){
   if(interCapGroup){ scene.remove(interCapGroup); disposeObj(interCapGroup); interCapGroup = null; }
   if(mode !== "inter" || empty) return;
-  var act = activeFaceData();
+  var act = actF || activeFaceData();
   if(!act.length) return;
   var key = "", i;
   for(i=0;i<act.length;i++) key += "1";
   var caps = cellCaps({key:key}, act);
   if(!caps.length) return;
-  var specs = withBoreCapSpec(activeCyls().map(function(c){ return cylSpecOf(c, c.hole ? 1 : -1); }));
+  var specs = withBoreCapSpec((acy || activeCyls()).map(function(c){ return cylSpecOf(c, c.hole ? 1 : -1); }));
   interCapGroup = new THREE.Group();
   caps.forEach(function(g){
     var mt = new THREE.MeshLambertMaterial({color:0xdd7a34, side:THREE.DoubleSide});
@@ -5244,8 +5248,13 @@ function showXlineLabelTmp(line, nm){
     xlineLbl = null; _xlineLblTimer = null;
   }, 2000);
 }
-/* 立体外轮廓采样点（吸附"与轮廓相切"用）：不同立体各自的边缘点 */
+/* 立体外轮廓采样点（吸附"与轮廓相切"用）：不同立体各自的边缘点。
+   v33.35：同一组 shape/R/H/flipped 下这是纯函数结果；拖动开始时
+   buildTargets 与 snapModelList 会连着要两次（3000+ 个 Vector3），缓存掉。 */
+var _rimCache = null, _rimKey = "";
 function rimPoints(){
+  var key = shape + "|" + R + "|" + H + "|" + (flipped ? 1 : 0);
+  if(_rimCache && _rimKey === key) return _rimCache;
   var pts = [], i, k;
   var S2 = SHAPES[shape];
   if(S2.lying){
@@ -5254,17 +5263,17 @@ function rimPoints(){
         pts.push(new THREE.Vector3(R*Math.cos(k), R*Math.sin(k), zz*H/2)); }
     }
     for(var q=-1;q<=1;q+=2) pts.push(new THREE.Vector3(0,0,q*H/2));
-    return pts;
+  } else if(isPoly()){
+    pts = polyVerts();
+  } else {
+    for(var li=0; li<=48; li++){
+      var y = -H/2 + H*li/48, rm = radiusAt(y);
+      if(rm < 1e-3){ pts.push(new THREE.Vector3(0,y,0)); continue; }
+      for(i=0;i<64;i++){ k = i/64*Math.PI*2;
+        pts.push(new THREE.Vector3(rm*Math.cos(k), y, rm*Math.sin(k))); }
+    }
   }
-  if(isPoly()){
-    return polyVerts();
-  }
-  for(var li=0; li<=48; li++){
-    var y = -H/2 + H*li/48, rm = radiusAt(y);
-    if(rm < 1e-3){ pts.push(new THREE.Vector3(0,y,0)); continue; }
-    for(i=0;i<64;i++){ k = i/64*Math.PI*2;
-      pts.push(new THREE.Vector3(rm*Math.cos(k), y, rm*Math.sin(k))); }
-  }
+  _rimCache = pts; _rimKey = key;
   return pts;
 }
 /* ==================================================================
@@ -5434,28 +5443,30 @@ function snapFeaturePoints(pts){
   return out;
 }
 /* ---- 模型间"刚好接触"：分离轴重叠深度 pen(t) ----
-   A 的中心在 X，B 固定。pen>0 视为重叠，pen=0 即刚好相切接触。 */
-function snapPenT(A, B, sd0, dw, t){
+   A 的中心在 X，B 固定。pen>0 视为重叠，pen=0 即刚好相切接触。
+   v33.35：c1/c2 = A、B 在第 k 条分离轴上的固定间隔（与 t 无关），
+   拖动开始时算一次；每次 pen(t) 只剩"一次加法 + 取小"，不再反复读 A/B。 */
+function snapPenT(c1, c2, sd0, dw, t){
   var p = 1e18;
   for(var k=0;k<sd0.length;k++){
     var sd = sd0[k] + t*dw[k];
-    var m1 = A.hi[k] + sd - B.loW[k];
-    var m2 = B.hiW[k] - A.lo[k] - sd;
+    var m1 = c1[k] + sd, m2 = c2[k] - sd;
     var mm = m1 < m2 ? m1 : m2;
     if(mm < p) p = mm;
   }
   return p;
 }
-/* 沿射线 X0+t·w 找最外侧的 pen=0 根（从远处靠近时的第一接触位置） */
-function snapContactOuterRoot(A, B, sd0, dw, L){
-  var NS = 48, step = L/NS, prevT = 0, prevP = snapPenT(A,B,sd0,dw,0), root = null, s, it;
+/* 沿射线 X0+t·w 找最外侧的 pen=0 根（从远处靠近时的第一接触位置）。
+   48 段扫描 + 22 次二分共用同一份 c1/c2，不重复算支撑值。 */
+function snapContactOuterRoot(c1, c2, sd0, dw, L){
+  var NS = 48, step = L/NS, prevT = 0, prevP = snapPenT(c1,c2,sd0,dw,0), root = null, s, it;
   for(s=1;s<=NS;s++){
-    var t = s*step, p = snapPenT(A,B,sd0,dw,t);
+    var t = s*step, p = snapPenT(c1,c2,sd0,dw,t);
     if(prevP > 0 && p <= 0){
       var lo = prevT, hi = t;
       for(it=0; it<22; it++){
         var mid = (lo+hi)/2;
-        if(snapPenT(A,B,sd0,dw,mid) > 0) lo = mid; else hi = mid;
+        if(snapPenT(c1,c2,sd0,dw,mid) > 0) lo = mid; else hi = mid;
       }
       root = (lo+hi)/2;
     }
@@ -5464,14 +5475,32 @@ function snapContactOuterRoot(A, B, sd0, dw, L){
   return root;
 }
 /* 拖动开始时一次算好接触边界：每个伙伴模型在拖动平面里围出一条闭合
-   "接触曲线"（72 段折线），拖动时只做投影，不重算几何。 */
+   "接触曲线"（72 段折线），拖动时只做投影，不重算几何。
+   v33.35：折线同时预编译成标量数组 segFast + 包围盒 box + 孤立点 solo。
+   拖动中每帧要做上千次"点到线段距离"，用 Vector3.clone() 会制造大量 GC 垃圾，
+   也会让吸附检测跟不上事件流（表现为"划过去了却没吸上"）。 */
+function snapSegFast(a, b){
+  var dx=b.x-a.x, dy=b.y-a.y, dz=b.z-a.z;
+  return {ax:a.x, ay:a.y, az:a.z, dx:dx, dy:dy, dz:dz, l2:dx*dx+dy*dy+dz*dz};
+}
+function snapBoxOf(pts){
+  var lo=[1e18,1e18,1e18], hi=[-1e18,-1e18,-1e18], i, p;
+  for(i=0;i<pts.length;i++){
+    p = pts[i];
+    if(p.x<lo[0]) lo[0]=p.x; if(p.x>hi[0]) hi[0]=p.x;
+    if(p.y<lo[1]) lo[1]=p.y; if(p.y>hi[1]) hi[1]=p.y;
+    if(p.z<lo[2]) lo[2]=p.z; if(p.z>hi[2]) hi[2]=p.z;
+  }
+  return pts.length ? {lo:lo, hi:hi} : null;
+}
 function snapContactPrepare(anchor, planeNrm, skipKey){
   var D = SNAP_DIRS, models = snapModelList(), A = null, partners = [], k;
   models.forEach(function(m){
     if(!m.pts || !m.pts.length) return;
     var s = snapCloudSupport(m.pts, D, m.center);
     var it = {label:m.label, lo:s.lo, hi:s.hi, center:m.center,
-              loW:[], hiW:[], isModel:m.isModel !== false, segs:[], pts:[]};
+              loW:[], hiW:[], isModel:m.isModel !== false, segs:[], segFast:[],
+              solo:[], pts:[], box:null, c1:null, c2:null};
     for(k=0;k<D.length;k++){
       var cd = D[k].dot(m.center);
       it.loW.push(s.lo[k]+cd); it.hiW.push(s.hi[k]+cd);
@@ -5488,44 +5517,128 @@ function snapContactPrepare(anchor, planeNrm, skipKey){
   var L = 260, NSEG = 72, j;
   partners.forEach(function(B){
     var X0 = B.center.clone().addScaledVector(n, anchor.clone().sub(B.center).dot(n));
+    /* sd0[k] = D[k]·X0 与射线方向无关：旧版在 72 个方向里各算 53 次，重复了 72 倍 */
+    var sd0 = [];
+    for(k=0;k<D.length;k++) sd0.push(D[k].dot(X0));
+    B.c1 = []; B.c2 = [];
+    for(k=0;k<D.length;k++){
+      B.c1.push(A.hi[k] - B.loW[k]);
+      B.c2.push(B.hiW[k] - A.lo[k]);
+    }
     var pts = [];
     for(j=0;j<NSEG;j++){
       var th = j/NSEG*Math.PI*2;
       var w = e1.clone().multiplyScalar(Math.cos(th)).addScaledVector(e2, Math.sin(th));
-      var sd0 = [], dw = [];
-      for(k=0;k<D.length;k++){ sd0.push(D[k].dot(X0)); dw.push(D[k].dot(w)); }
-      var t = snapContactOuterRoot(A, B, sd0, dw, L);
+      var dw = [];
+      for(k=0;k<D.length;k++) dw.push(D[k].dot(w));
+      var t = snapContactOuterRoot(B.c1, B.c2, sd0, dw, L);
       pts.push(t == null ? null : X0.clone().addScaledVector(w, t));
     }
     B.pts = [];
+    var covered = [];
     for(j=0;j<NSEG;j++){
       var p0 = pts[j], p1 = pts[(j+1)%NSEG];
       if(p0) B.pts.push(p0);
-      if(p0 && p1 && p0.distanceTo(p1) < 60) B.segs.push([p0,p1]);
+      if(p0 && p1 && p0.distanceTo(p1) < 60){
+        B.segs.push([p0,p1]);
+        B.segFast.push(snapSegFast(p0, p1));
+        covered[j] = covered[(j+1)%NSEG] = true;
+      }
     }
+    /* 折线断开处的孤立接触点：线段的最近点已包含两端点，旧版 segs + pts
+       双重循环把 72 个顶点又查了一遍，是纯重复计算。 */
+    for(j=0;j<NSEG;j++) if(pts[j] && !covered[j]) B.solo.push(pts[j]);
+    B.box = snapBoxOf(B.pts);
   });
-  return {D:D, A:A, partners:partners, tgt:null};
+  /* prevRaw：上一次 pointermove 的"手指原始位置"，连续吸附判定要用 */
+  return {D:D, A:A, partners:partners, tgt:null, prevRaw:anchor.clone()};
 }
-function snapNearestOnSeg(P, A, B){
-  var ab = B.clone().sub(A), l2 = ab.lengthSq();
-  if(l2 < 1e-9) return A.clone();
-  var t = P.clone().sub(A).dot(ab)/l2;
-  t = Math.max(0, Math.min(1, t));
-  return A.clone().addScaledVector(ab, t);
+/* 点到线段 / 点到点 的距离平方：纯标量、零分配，最近点写进复用的 _snapPt。
+   拖动每帧要跑上千次，任何一次 clone() 都会被放大成 GC 抖动。 */
+var _snapPt = {x:0, y:0, z:0};
+function snapPtSegDistSq(px, py, pz, sg){
+  var t = sg.l2 > 1e-12
+    ? ((px-sg.ax)*sg.dx + (py-sg.ay)*sg.dy + (pz-sg.az)*sg.dz)/sg.l2 : 0;
+  t = t < 0 ? 0 : (t > 1 ? 1 : t);
+  var qx=sg.ax+sg.dx*t, qy=sg.ay+sg.dy*t, qz=sg.az+sg.dz*t;
+  var ex=px-qx, ey=py-qy, ez=pz-qz;
+  _snapPt.x=qx; _snapPt.y=qy; _snapPt.z=qz;
+  return ex*ex + ey*ey + ez*ez;
+}
+function snapPtDistSq(px, py, pz, p){
+  var a=px-p.x, b=py-p.y, c=pz-p.z;
+  return a*a + b*b + c*c;
+}
+/* AABB 粗筛：运动线段整体离某伙伴的接触曲线还很远时，整块跳过。 */
+function snapAabbHit(B, ax, ay, az, bx, by, bz, m){
+  if(!B.box) return false;
+  var lo=B.box.lo, hi=B.box.hi;
+  return !(Math.max(ax,bx)+m < lo[0] || Math.min(ax,bx)-m > hi[0] ||
+           Math.max(ay,by)+m < lo[1] || Math.min(ay,by)-m > hi[1] ||
+           Math.max(az,bz)+m < lo[2] || Math.min(az,bz)-m > hi[2]);
 }
 function snapContactNearest(raw, ctx){
-  var best = null, bd = 1e18;
+  var px=raw.x, py=raw.y, pz=raw.z;
+  var bd=1e18, bx=0, by=0, bz=0, label=null, i, j;
   ctx.partners.forEach(function(B){
-    B.segs.forEach(function(sg){
-      var p = snapNearestOnSeg(raw, sg[0], sg[1]), d = p.distanceTo(raw);
-      if(d < bd){ bd = d; best = {p:p, label:B.label}; }
-    });
-    B.pts.forEach(function(p){
-      var d = p.distanceTo(raw);
-      if(d < bd){ bd = d; best = {p:p, label:B.label}; }
-    });
+    var fs=B.segFast;
+    for(i=0;i<fs.length;i++){
+      var d2=snapPtSegDistSq(px,py,pz,fs[i]);
+      if(d2<bd){ bd=d2; bx=_snapPt.x; by=_snapPt.y; bz=_snapPt.z; label=B.label; }
+    }
+    for(j=0;j<B.solo.length;j++){
+      var p=B.solo[j], e2=snapPtDistSq(px,py,pz,p);
+      if(e2<bd){ bd=e2; bx=p.x; by=p.y; bz=p.z; label=B.label; }
+    }
   });
-  return best ? {p:best.p, d:bd, label:best.label} : null;
+  return label ? {p:new THREE.Vector3(bx,by,bz), d:Math.sqrt(bd), label:label} : null;
+}
+/* ==================================================================
+   v33.35：连续（扫掠）吸附判定 —— 修"已经越过触发位置却没吸上"
+   ------------------------------------------------------------------
+   pointermove 是离散采样。手指快速划过、或 WebView 因为重建卡顿把多帧
+   合并成一个事件时，相邻两次采样可能从目标的 -10mm 直接跳到 +10mm，
+   整段跨过 2.8mm 的吸合带：逐点判定永远等不到"进入带内"的那一帧。
+   这里把 [上一帧手指位置, 这一帧手指位置] 当成一条**连续线段**来判：
+   沿线段按 ≤SNAP_ON/2 的步长取样，只要真的穿过吸合带，必有采样点落在
+   带内（几何上可证，不是"碰运气加密"）；AABB 粗筛先剔掉无关伙伴。
+   ================================================================== */
+function snapContactSwept(prev, raw, ctx, avoid){
+  var ax=prev.x, ay=prev.y, az=prev.z;
+  var dx=raw.x-ax, dy=raw.y-ay, dz=raw.z-az;
+  var len=Math.sqrt(dx*dx+dy*dy+dz*dz);
+  if(len < 1e-6) return null;
+  /* 起点本来就在吸合带里 → 交给逐点判定。否则"吸住后往外拖"会被反复重吸 */
+  var prevNear = snapContactNearest(prev, ctx);
+  if(prevNear && prevNear.d <= SNAP_ON) return null;
+  var cand = [], ON2 = SNAP_ON*SNAP_ON;
+  ctx.partners.forEach(function(B){
+    if(snapAabbHit(B, ax,ay,az, raw.x,raw.y,raw.z, SNAP_ON)) cand.push(B);
+  });
+  if(!cand.length) return null;
+  var NS=Math.min(256, Math.max(1, Math.ceil(len/(SNAP_ON*0.5))));
+  var bd=ON2, bx=0, by=0, bz=0, label=null, bestAt=-1, s, ci, i, j;
+  for(s=0;s<=NS;s++){
+    var u=s/NS, px=ax+dx*u, py=ay+dy*u, pz=az+dz*u;
+    /* avoid = 刚脱离的那个吸附点，跳过它附近，避免松手瞬间又被吸回去 */
+    if(avoid && snapPtDistSq(px,py,pz,avoid) <= ON2) continue;
+    for(ci=0;ci<cand.length;ci++){
+      var B=cand[ci], fs=B.segFast;
+      for(i=0;i<fs.length;i++){
+        var d2=snapPtSegDistSq(px,py,pz,fs[i]);
+        if(d2 < bd-1e-9 || (d2 <= bd+1e-9 && u > bestAt)){
+          bd=d2; bx=_snapPt.x; by=_snapPt.y; bz=_snapPt.z; label=B.label; bestAt=u;
+        }
+      }
+      for(j=0;j<B.solo.length;j++){
+        var p=B.solo[j], e2=snapPtDistSq(px,py,pz,p);
+        if(e2 < bd-1e-9 || (e2 <= bd+1e-9 && u > bestAt)){
+          bd=e2; bx=p.x; by=p.y; bz=p.z; label=B.label; bestAt=u;
+        }
+      }
+    }
+  }
+  return label ? {p:new THREE.Vector3(bx,by,bz), d:Math.sqrt(bd), label:label, at:bestAt} : null;
 }
 /* 吸合/脱离曲线：aa<=ON 完全贴合；ON<aa<OFF 渐进脱离；aa=OFF 恰好回到
    手指位置（旧版这里差一个 SNAP_ON，松手瞬间会跳 2.8mm，本版一并修掉）。 */
@@ -5534,19 +5647,56 @@ function snapEase(aa){
   if(aa >= SNAP_OFF) return aa;
   return SNAP_ON + (aa-SNAP_ON)*(aa-SNAP_ON)/(SNAP_OFF-SNAP_ON);
 }
-/* 拖动中：目标位置固定不漂移，吸住后按距离平滑脱离（与拖面片同一手感） */
+/* 面片拖动（1D）的连续判定：本段 [dPrev,dRaw] 真正**跨过**了哪个目标位置。
+   按"离手指终点最近"取最后一个，快速一步划过多个目标时不会倒吸回最前面那个。
+   cur = 本次事件开始时已吸住的目标，排除它可避免脱离时被原地重吸。 */
+function snapCrossedTarget(ts, dPrev, dRaw, cur){
+  var lo=Math.min(dPrev,dRaw), hi=Math.max(dPrev,dRaw);
+  if(hi-lo < 1e-9) return null;
+  var best=null, bestAt=-1, i;
+  for(i=0;i<ts.length;i++){
+    var t=ts[i];
+    if(t === cur) continue;                           // 刚离开的目标不原地重吸
+    if(t.d < lo || t.d > hi) continue;                 // 必须真的跨过目标位置
+    var at = (t.d-dPrev)/(dRaw-dPrev);                 // 0=起点，1=终点
+    if(at <= 1e-9) continue;                          // 恰好落在起点不算"经过"
+    if(at > bestAt){ bestAt=at; best=t; }
+  }
+  return best;
+}
+/* 吸上面片目标时统一处理高亮 / 提示条 / 振动，避免两处判定各写一遍 */
+function snapFaceEngage(t){
+  drag.tgt = t;
+  if(t.kind === "face" || t.kind === "curve") setCurveHi(drag.lines, t.src, true);
+  else setCurveHi(drag.lines, null, false);
+  showSnapTip("已吸附：" + (t.kind === "face"
+    ? ("与面" + (t.src+1) + " " + t.label + " 共面")
+    : t.kind === "curve"
+      ? ("与面" + (t.src+1) + " 的截线相接")
+      : t.kind === "apex"
+        ? ("平面过" + (shape === "hemi" ? "顶点" : "锥尖"))
+        : (t.label || "特殊位置")));
+  try{ navigator.vibrate && navigator.vibrate(12); }catch(_){}
+}
+/* 拖动中：目标位置固定不漂移，吸住后按距离平滑脱离（与拖面片同一手感）。
+   v33.35：ctx.prevRaw 是上一次事件的手指位置；先做连续扫掠再退回逐点判定。
+   一步跨过接触曲线时，本帧先钉在接触点上（下一帧若继续远离再按原曲线脱离），
+   保证"经过触发区域"必定看得到吸附，而不是整段跳过去毫无反应。 */
 function snapContactApply(raw, ctx){
-  var tgt = ctx.tgt;
-  if(tgt){
-    var aa = raw.distanceTo(tgt.p);
+  var prev = ctx.prevRaw;
+  ctx.prevRaw = raw.clone();
+  var hadTgt = ctx.tgt, avoid = hadTgt ? hadTgt.p : null;
+  if(hadTgt){
+    var aa = raw.distanceTo(hadTgt.p);
     if(aa > SNAP_OFF){
       ctx.tgt = null; hideSnapTip();
     } else {
       var k = snapEase(aa)/Math.max(aa, 1e-6);
-      return {pos:tgt.p.clone().lerp(raw, k), snapped:true, label:tgt.label, aa:aa};
+      return {pos:hadTgt.p.clone().lerp(raw, k), snapped:true, label:hadTgt.label, aa:aa};
     }
   }
-  var near = snapContactNearest(raw, ctx);
+  var near = prev ? snapContactSwept(prev, raw, ctx, avoid) : null;
+  if(!near) near = snapContactNearest(raw, ctx);
   if(near && near.d <= SNAP_ON){
     ctx.tgt = {p:near.p.clone(), label:near.label};
     showSnapTip("已吸附：与" + near.label + "刚好接触");
@@ -5596,6 +5746,7 @@ function buildTargets(i){
     }
   });
   var S = SHAPES[shape];
+  var rp = S.lab ? null : rimPoints();
   /* v33.32：实验室没有主立体（SHAPES.lab 只是 H=1,R=1 的占位体）。
      以前照样按占位体算出"过锥尖 / 与轮廓相切 ±1 / 底面"等目标 —— 全是假吸附点，
      还会把部件轮廓的真目标挤掉。现在实验室只由下面的 snapModelList() 给目标。 */
@@ -5615,7 +5766,7 @@ function buildTargets(i){
     // 过立体中心（所有立体都对原点中心对称 → 平面过原点即过中心）
     pushT({kind:"center", src:-1, d: 0, label:"过立体中心"});
     // 与外轮廓相切：平面扫到最外/最里，截线退化成一个点
-    var rp = rimPoints(), mn = 1e9, mx = -1e9;
+    var mn = 1e9, mx = -1e9;
     rp.forEach(function(P){
       var s = nv.x*P.x + nv.y*P.y + nv.z*P.z;
       if(s < mn) mn = s;
@@ -6191,15 +6342,21 @@ function attachDrag(){
     var cc = ensureCurves(i);
     /* moved：轻点面片（没真正拖动）时不算拖，pointerup 里还要拿它当"点线看名称"的机会，
        否则面片会把屏幕中央的点击全吞掉 → 相贯线/交线"有时点不出来"。 */
-    drag = {i:i, nv:nv, p0:p0, d0:d, targets:[], tgt:null, group:cc.group, lines:cc.lines, moved:false};
+    /* dPrev：上一次 pointermove 的手指位置（沿 nv 的标量 d），连续吸附判定要用 */
+    drag = {i:i, nv:nv, p0:p0, d0:d, dPrev:d, targets:[], tgt:null,
+            group:cc.group, lines:cc.lines, moved:false};
     drag.targets = buildTargets(i);
     controls.enabled = false;
     updateVisPos(i);
     e.preventDefault();
   }, true);
   window.addEventListener("pointermove", function(e){
-    // 兜底：手指已经抬起但 drag 还没结束（pointerup 丢失）→ 立刻结束，避免"滑不动屏幕"
-    if((partDrag || cylDrag || drag) && e.buttons === 0 && e.type === "pointermove"){ endDrag(); }
+    // 兜底：鼠标已经抬起但 drag 还没结束（pointerup 丢失）→ 立刻结束，避免"滑不动屏幕"
+    /* v33.35：只对鼠标/画笔生效。部分 Android WebView 的触摸 pointermove
+       会把 buttons 报成 0，旧写法会在拖动刚超过阈值时直接 endDrag()，
+       手指还没经过吸附位置就被收尾 —— 这正是"吸附不灵敏"的隐蔽来源之一。 */
+    if((partDrag || cylDrag || drag) && e.buttons === 0 &&
+       e.pointerType !== "touch" && e.type === "pointermove"){ endDrag(); }
     /* ---- 候选激活 / 手势仲裁（v22）----
        按下时只记 pending，不锁 controls、不 preventDefault：
        OrbitControls 全程保持可用，用户随时能转视角。
@@ -6246,24 +6403,31 @@ function attachDrag(){
            吸住时不再做 0.5mm 取整，保证接触是精确的（否则会差 0.25mm）。 */
         var rsP = partDrag.snap ? snapContactApply(rawP, partDrag.snap) : null;
         var posP = (rsP && rsP.snapped) ? rsP.pos : rawP;
-        if(rsP && rsP.snapped){ pr3.x = posP.x; pr3.y = posP.y; pr3.z = posP.z; }
+        var nxP, nyP, nzP;
+        if(rsP && rsP.snapped){ nxP = posP.x; nyP = posP.y; nzP = posP.z; }
         else {
-          pr3.x = Math.round(posP.x*2)/2;
-          pr3.y = Math.round(posP.y*2)/2;
-          pr3.z = Math.round(posP.z*2)/2;
+          nxP = Math.round(posP.x*2)/2;
+          nyP = Math.round(posP.y*2)/2;
+          nzP = Math.round(posP.z*2)/2;
         }
         partDrag.moved = true;
-        /* v33.19（用户反馈"拖动时有时候会卡"的根因）：
-           这里原来是 rebuildCells() → buildParts()。
-           但 buildParts() 末尾有 `if(mode === "pick") cellsDirty = true;`（v33.17 加的），
-           于是刚清掉的 cellsDirty 又被置回 true，**渲染循环那一帧再完整重建一遍** ——
-           一次 pointermove 触发两次 rebuildCells（实测 22ms × 2 = 44ms/帧，
-           真机 WebView 上是 100~200ms，手感就是"卡"）。
-           现在顺序反过来：先 buildParts()（它置位 cellsDirty），
-           再统一重建并清位 —— 一次 pointermove 只重建一次。 */
-        try{ buildParts(); }catch(_){ }
-        if(mode === "pick"){
-          try{ rebuildCells(); buildCellVis(); cellsDirty = false; }catch(_){ }
+        /* v33.35：位置一点没变就别重建。吸附钉住时、高频 pointermove 落在
+           同一个 0.5mm 格子里时，旧版照样 buildParts()+rebuildCells()+buildCellVis()
+           全套跑一遍，是拖动卡顿最直接的浪费。 */
+        if(nxP !== pr3.x || nyP !== pr3.y || nzP !== pr3.z){
+          pr3.x = nxP; pr3.y = nyP; pr3.z = nzP;
+          /* v33.19（用户反馈"拖动时有时候会卡"的根因）：
+             这里原来是 rebuildCells() → buildParts()。
+             但 buildParts() 末尾有 `if(mode === "pick") cellsDirty = true;`（v33.17 加的），
+             于是刚清掉的 cellsDirty 又被置回 true，**渲染循环那一帧再完整重建一遍** ——
+             一次 pointermove 触发两次 rebuildCells（实测 22ms × 2 = 44ms/帧，
+             真机 WebView 上是 100~200ms，手感就是"卡"）。
+             现在顺序反过来：先 buildParts()（它置位 cellsDirty），
+             再统一重建并清位 —— 一次 pointermove 只重建一次。 */
+          try{ buildParts(); }catch(_){ }
+          if(mode === "pick"){
+            try{ rebuildCells(); buildCellVis(); cellsDirty = false; }catch(_){ }
+          }
         }
       }
       return;
@@ -6280,17 +6444,22 @@ function attachDrag(){
       /* v33.32：相贯体也参与"与其它模型刚好接触"的吸附 */
       var rsC = cylDrag.snap ? snapContactApply(rawC, cylDrag.snap) : null;
       var posC = (rsC && rsC.snapped) ? rsC.pos : rawC;
-      if(rsC && rsC.snapped){ c2.x = posC.x; c2.y = posC.y; c2.z = posC.z; }
+      var nxC, nyC, nzC;
+      if(rsC && rsC.snapped){ nxC = posC.x; nyC = posC.y; nzC = posC.z; }
       else {
-        c2.x = Math.round(posC.x*2)/2;      // 0.5mm 步进，手感更稳
-        c2.y = Math.round(posC.y*2)/2;
-        c2.z = Math.round(posC.z*2)/2;
+        nxC = Math.round(posC.x*2)/2;      // 0.5mm 步进，手感更稳
+        nyC = Math.round(posC.y*2)/2;
+        nzC = Math.round(posC.z*2)/2;
       }
       cylDrag.moved = true;
-      buildCylVis(true);      // 拖动中先不算相贯线（拖动结束 refresh 时补上），保证跟手
-      applyClipping();
-      if(mode === "pick") cellsDirty = true;
-      syncCylInputs(cylDrag.ci);
+      /* v33.35：同上，坐标没变就跳过整条重建链（buildCylVis + applyClipping + 输入框回写） */
+      if(nxC !== c2.x || nyC !== c2.y || nzC !== c2.z){
+        c2.x = nxC; c2.y = nyC; c2.z = nzC;
+        buildCylVis(true);      // 拖动中先不算相贯线（拖动结束 refresh 时补上），保证跟手
+        applyClipping();
+        if(mode === "pick") cellsDirty = true;
+        syncCylInputs(cylDrag.ci);
+      }
       return;
     }
     if(!drag) return;
@@ -6302,34 +6471,31 @@ function attachDrag(){
     var q = new THREE.Vector3();
     if(!raycaster.ray.intersectPlane(plHelper, q)) return;
     var dRaw = drag.d0 + drag.nv.dot(q.clone().sub(drag.p0));
-    /* —— 吸附：目标位置固定 + 平滑脱离（拖得动、不粘死、无跳变） —— */
-    var tgt = drag.tgt;
+    /* —— 吸附：连续扫掠 + 目标位置固定 + 平滑脱离 —— */
+    var dPrev = (drag.dPrev == null) ? dRaw : drag.dPrev;
+    drag.dPrev = dRaw;                       // 记的是"手指原始位置"，不是吸附后的 dCur
+    var hadTgt = drag.tgt, tgt = drag.tgt, catchNow = false;
     if(tgt && Math.abs(dRaw - tgt.d) > SNAP_OFF){
       drag.tgt = tgt = null;
       setCurveHi(drag.lines, null, false);
       hideSnapTip();
     }
-    if(!tgt){
+    /* v33.35：旧版只看 dRaw 一个点。手指快速划过、或 WebView 卡顿把多帧
+       合并成一个 pointermove 时，dPrev=-10 → dRaw=+10 会整段跨过 2.8mm
+       吸合带，永远等不到"进入带内"的那一帧 = 越过位置却没吸附。
+       改成对 [dPrev,dRaw] 线段判定；已吸住时还允许切到本段更晚经过的目标，
+       避免相邻目标被粘滞目标挡住。 */
+    var crossed = snapCrossedTarget(drag.targets, dPrev, dRaw, hadTgt);
+    if(crossed){
+      snapFaceEngage(crossed);
+      tgt = crossed; catchNow = true;
+    } else if(!tgt){
       var best = null, bg = SNAP_ON;
       drag.targets.forEach(function(t){
         var g = Math.abs(dRaw - t.d);
         if(g < bg){ bg = g; best = t; }
       });
-      if(best){
-        drag.tgt = tgt = best;
-        /* v33.32：换成非截线类目标（模型轮廓/特征点）时清掉旧的黄色高亮，
-           否则绿色会一直挂在上一根截线上。 */
-        if(tgt.kind === "face" || tgt.kind === "curve") setCurveHi(drag.lines, tgt.src, true);
-        else setCurveHi(drag.lines, null, false);
-        showSnapTip("已吸附：" + (tgt.kind === "face"
-          ? ("与面" + (tgt.src+1) + " " + tgt.label + " 共面")
-          : tgt.kind === "curve"
-            ? ("与面" + (tgt.src+1) + " 的截线相接")
-            : tgt.kind === "apex"
-              ? ("平面过" + (shape === "hemi" ? "顶点" : "锥尖"))
-              : (tgt.label || "特殊位置")));
-        try{ navigator.vibrate && navigator.vibrate(12); }catch(_){}
-      }
+      if(best){ snapFaceEngage(best); tgt = best; }
     }
     var dCur = dRaw;
     if(tgt){
@@ -6337,6 +6503,9 @@ function attachDrag(){
          比 dRaw 少了 SNAP_ON，松手瞬间会跳 2.8mm；现在 aa=SNAP_OFF 时恰好=dRaw。 */
       var off = dRaw - tgt.d, sgn = off < 0 ? -1 : 1, aa = Math.abs(off);
       dCur = tgt.d + sgn*snapEase(aa);                                      // 吸合/平滑脱离，无跳变
+      /* 一步越过目标时本帧先钉在目标上，下一帧若继续远离再沿原曲线平滑脱离，
+         保证"经过触发位置"必定看得到吸附，而不是一帧跳过去毫无反应。 */
+      if(catchNow && aa > SNAP_ON) dCur = tgt.d;
     }
     var f = faces[drag.i];
     var dOld = faceConst(f, drag.nv);
