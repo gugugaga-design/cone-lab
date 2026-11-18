@@ -115,6 +115,39 @@
     background:rgba(21,29,44,.9); color:var(--tx); font-size:12px; }
   .demoCase.on{ border-color:#6bffa0; color:#bcffd6; background:rgba(12,50,34,.9); }
   #demoCards{ display:flex; flex-direction:column; gap:8px; padding:6px 12px 12px; }
+
+  #spCards{ display:flex; flex-direction:column; gap:8px; padding:6px 12px 12px; }
+
+  /* ===== 特殊演示：独立的全屏 3D 查看页（不复用主实验的场景/相机） ===== */
+  #spOverlay{ position:fixed; inset:0; z-index:60; background:#0e1420; }
+  #spOverlay[hidden]{ display:none; }
+  #spCanvas{ position:absolute; inset:0; width:100%; height:100%; display:block; touch-action:none; }
+  #spTop{ position:absolute; top:calc(10px + env(safe-area-inset-top,0px)); left:10px; right:10px;
+    display:flex; align-items:center; gap:10px; z-index:2; }
+  #spTop button{ height:34px; padding:0 12px; border-radius:9px; border:1px solid var(--line);
+    background:rgba(21,29,44,.9); color:var(--tx); font-size:13px; white-space:nowrap; }
+  .sp-title{ min-width:0; }
+  .sp-title b{ display:block; font-size:15px; }
+  .sp-title small{ display:block; font-size:11px; color:var(--sub); margin-top:2px; line-height:1.3; }
+  #spViews{ position:absolute; top:calc(54px + env(safe-area-inset-top,0px)); left:10px; right:10px;
+    display:flex; gap:6px; flex-wrap:wrap; z-index:2; }
+  #spViews button{ height:30px; padding:0 10px; border-radius:9px; border:1px solid var(--line);
+    background:rgba(21,29,44,.85); color:var(--tx); font-size:12px; }
+  #spViews button.on{ border-color:var(--acc); color:#8fc4ff; }
+  #spTools{ position:absolute; left:10px; right:10px; bottom:calc(14px + env(safe-area-inset-bottom,0px));
+    display:flex; gap:6px; flex-wrap:wrap; z-index:2; }
+  #spTools button{ height:34px; padding:0 12px; border-radius:9px; border:1px solid var(--line);
+    background:rgba(21,29,44,.9); color:var(--tx); font-size:12px; }
+  #spTools button.on{ border-color:#6bffa0; color:#bcffd6; background:rgba(12,50,34,.9); }
+  #spHint{ position:absolute; right:12px; bottom:calc(56px + env(safe-area-inset-bottom,0px));
+    font-size:11px; color:var(--sub); opacity:.8; z-index:2; pointer-events:none; }
+  #spLoading{ position:absolute; inset:0; z-index:3; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; gap:12px; background:rgba(14,20,32,.86);
+    font-size:13px; color:var(--sub); }
+  #spLoading[hidden]{ display:none; }
+  .sp-spin{ width:30px; height:30px; border:3px solid #26344a; border-top-color:var(--acc);
+    border-radius:50%; animation:spSpin .8s linear infinite; }
+  @keyframes spSpin{ to{ transform:rotate(360deg); } }
   #partAddRow{ display:flex; gap:6px; padding:2px 10px 6px; flex-wrap:wrap; }
   #partAddRow .chip{ border-color:#3a6a8a; color:#cfe8ff; }
   #partAddRow .chip:active{ background:#1d3d57; }
@@ -315,6 +348,9 @@
       <span class="go">›</span>
     </button>
   </div>
+  <div class="ph-title" style="padding:14px 12px 2px">特殊演示
+    <span style="font-size:11px;color:var(--sub);font-weight:400">· 独立 3D 模型（可持续增加）</span></div>
+  <div id="spCards"></div>
 </div>
 <div id="stage">
   <canvas id="gl"></canvas>
@@ -437,6 +473,23 @@
       已经隐藏的部分仍然是隐藏的（点「全部保留」恢复）。点选模式里也能按住圆环/面片拖动，只是拖动幅度要过 10px。
     </div>
   </div>
+</div>
+
+<div id="spOverlay" hidden>
+  <canvas id="spCanvas"></canvas>
+  <div id="spTop">
+    <button id="spBack">‹ 功能列表</button>
+    <div class="sp-title"><b id="spName">特殊演示</b><small id="spInfo"></small></div>
+  </div>
+  <div id="spViews"></div>
+  <div id="spTools">
+    <button id="spEdges" class="on">棱线</button>
+    <button id="spCut">半剖</button>
+    <button id="spSpin">自动旋转</button>
+    <button id="spReset">重置视角</button>
+  </div>
+  <div id="spHint">单指旋转 · 双指缩放 · 双指平移</div>
+  <div id="spLoading" hidden><div class="sp-spin"></div><span>正在进行布尔运算、生成实体…</span></div>
 </div>
 
 <script src="lib/three.min.js"></script>
@@ -983,6 +1036,8 @@ resize();
   controls.update();
   if(cellsDirty && mode==="pick"){ rebuildCells(); buildCellVis(); }
   cellsDirty = false;
+  /* 特殊演示全屏时主场景停渲：避免两个 WebGL 上下文同时抢 GPU */
+  if(window.__spActive) return;
   renderer.render(scene, activeCam);
 })();
 
@@ -7189,6 +7244,3056 @@ function applyShape(name){
 applyShape("cone");
 showHome(true);
 })();
+</script>
+<script>
+/* ==========================================================================
+ * 特殊演示依赖：CSG 布尔运算库（来自 3d html/vendor/csg.js）
+ * 与 p47_new/p47_solution.html 内联的是同一份；包在 IIFE 内，不污染全局。
+ * ========================================================================== */
+(function(){
+"use strict";
+var CSG;
+// Constructive Solid Geometry (CSG) is a modeling technique that uses Boolean
+// operations like union and intersection to combine 3D solids. This library
+// implements CSG operations on meshes elegantly and concisely using BSP trees,
+// and is meant to serve as an easily understandable implementation of the
+// algorithm. All edge cases involving overlapping coplanar polygons in both
+// solids are correctly handled.
+// 
+// Example usage:
+// 
+//     var cube = CSG.cube();
+//     var sphere = CSG.sphere({ radius: 1.3 });
+//     var polygons = cube.subtract(sphere).toPolygons();
+// 
+// ## Implementation Details
+// 
+// All CSG operations are implemented in terms of two functions, `clipTo()` and
+// `invert()`, which remove parts of a BSP tree inside another BSP tree and swap
+// solid and empty space, respectively. To find the union of `a` and `b`, we
+// want to remove everything in `a` inside `b` and everything in `b` inside `a`,
+// then combine polygons from `a` and `b` into one solid:
+// 
+//     a.clipTo(b);
+//     b.clipTo(a);
+//     a.build(b.allPolygons());
+// 
+// The only tricky part is handling overlapping coplanar polygons in both trees.
+// The code above keeps both copies, but we need to keep them in one tree and
+// remove them in the other tree. To remove them from `b` we can clip the
+// inverse of `b` against `a`. The code for union now looks like this:
+// 
+//     a.clipTo(b);
+//     b.clipTo(a);
+//     b.invert();
+//     b.clipTo(a);
+//     b.invert();
+//     a.build(b.allPolygons());
+// 
+// Subtraction and intersection naturally follow from set operations. If
+// union is `A | B`, subtraction is `A - B = ~(~A | B)` and intersection is
+// `A & B = ~(~A | ~B)` where `~` is the complement operator.
+// 
+// ## License
+// 
+// Copyright (c) 2011 Evan Wallace (http://madebyevan.com/), under the MIT license.
+
+// # class CSG
+
+// Holds a binary space partition tree representing a 3D solid. Two solids can
+// be combined using the `union()`, `subtract()`, and `intersect()` methods.
+
+CSG = function() {
+  this.polygons = [];
+};
+
+// Construct a CSG solid from a list of `CSG.Polygon` instances.
+CSG.fromPolygons = function(polygons) {
+  var csg = new CSG();
+  csg.polygons = polygons;
+  return csg;
+};
+
+CSG.prototype = {
+  clone: function() {
+    var csg = new CSG();
+    csg.polygons = this.polygons.map(function(p) { return p.clone(); });
+    return csg;
+  },
+
+  toPolygons: function() {
+    return this.polygons;
+  },
+
+  // Return a new CSG solid representing space in either this solid or in the
+  // solid `csg`. Neither this solid nor the solid `csg` are modified.
+  // 
+  //     A.union(B)
+  // 
+  //     +-------+            +-------+
+  //     |       |            |       |
+  //     |   A   |            |       |
+  //     |    +--+----+   =   |       +----+
+  //     +----+--+    |       +----+       |
+  //          |   B   |            |       |
+  //          |       |            |       |
+  //          +-------+            +-------+
+  // 
+  union: function(csg) {
+    var a = new CSG.Node(this.clone().polygons);
+    var b = new CSG.Node(csg.clone().polygons);
+    a.clipTo(b);
+    b.clipTo(a);
+    b.invert();
+    b.clipTo(a);
+    b.invert();
+    a.build(b.allPolygons());
+    return CSG.fromPolygons(a.allPolygons());
+  },
+
+  // Return a new CSG solid representing space in this solid but not in the
+  // solid `csg`. Neither this solid nor the solid `csg` are modified.
+  // 
+  //     A.subtract(B)
+  // 
+  //     +-------+            +-------+
+  //     |       |            |       |
+  //     |   A   |            |       |
+  //     |    +--+----+   =   |    +--+
+  //     +----+--+    |       +----+
+  //          |   B   |
+  //          |       |
+  //          +-------+
+  // 
+  subtract: function(csg) {
+    var a = new CSG.Node(this.clone().polygons);
+    var b = new CSG.Node(csg.clone().polygons);
+    a.invert();
+    a.clipTo(b);
+    b.clipTo(a);
+    b.invert();
+    b.clipTo(a);
+    b.invert();
+    a.build(b.allPolygons());
+    a.invert();
+    return CSG.fromPolygons(a.allPolygons());
+  },
+
+  // Return a new CSG solid representing space both this solid and in the
+  // solid `csg`. Neither this solid nor the solid `csg` are modified.
+  // 
+  //     A.intersect(B)
+  // 
+  //     +-------+
+  //     |       |
+  //     |   A   |
+  //     |    +--+----+   =   +--+
+  //     +----+--+    |       +--+
+  //          |   B   |
+  //          |       |
+  //          +-------+
+  // 
+  intersect: function(csg) {
+    var a = new CSG.Node(this.clone().polygons);
+    var b = new CSG.Node(csg.clone().polygons);
+    a.invert();
+    b.clipTo(a);
+    b.invert();
+    a.clipTo(b);
+    b.clipTo(a);
+    a.build(b.allPolygons());
+    a.invert();
+    return CSG.fromPolygons(a.allPolygons());
+  },
+
+  // Return a new CSG solid with solid and empty space switched. This solid is
+  // not modified.
+  inverse: function() {
+    var csg = this.clone();
+    csg.polygons.map(function(p) { p.flip(); });
+    return csg;
+  }
+};
+
+// Construct an axis-aligned solid cuboid. Optional parameters are `center` and
+// `radius`, which default to `[0, 0, 0]` and `[1, 1, 1]`. The radius can be
+// specified using a single number or a list of three numbers, one for each axis.
+// 
+// Example code:
+// 
+//     var cube = CSG.cube({
+//       center: [0, 0, 0],
+//       radius: 1
+//     });
+CSG.cube = function(options) {
+  options = options || {};
+  var c = new CSG.Vector(options.center || [0, 0, 0]);
+  var r = !options.radius ? [1, 1, 1] : options.radius.length ?
+           options.radius : [options.radius, options.radius, options.radius];
+  return CSG.fromPolygons([
+    [[0, 4, 6, 2], [-1, 0, 0]],
+    [[1, 3, 7, 5], [+1, 0, 0]],
+    [[0, 1, 5, 4], [0, -1, 0]],
+    [[2, 6, 7, 3], [0, +1, 0]],
+    [[0, 2, 3, 1], [0, 0, -1]],
+    [[4, 5, 7, 6], [0, 0, +1]]
+  ].map(function(info) {
+    return new CSG.Polygon(info[0].map(function(i) {
+      var pos = new CSG.Vector(
+        c.x + r[0] * (2 * !!(i & 1) - 1),
+        c.y + r[1] * (2 * !!(i & 2) - 1),
+        c.z + r[2] * (2 * !!(i & 4) - 1)
+      );
+      return new CSG.Vertex(pos, new CSG.Vector(info[1]));
+    }));
+  }));
+};
+
+// Construct a solid sphere. Optional parameters are `center`, `radius`,
+// `slices`, and `stacks`, which default to `[0, 0, 0]`, `1`, `16`, and `8`.
+// The `slices` and `stacks` parameters control the tessellation along the
+// longitude and latitude directions.
+// 
+// Example usage:
+// 
+//     var sphere = CSG.sphere({
+//       center: [0, 0, 0],
+//       radius: 1,
+//       slices: 16,
+//       stacks: 8
+//     });
+CSG.sphere = function(options) {
+  options = options || {};
+  var c = new CSG.Vector(options.center || [0, 0, 0]);
+  var r = options.radius || 1;
+  var slices = options.slices || 16;
+  var stacks = options.stacks || 8;
+  var polygons = [], vertices;
+  function vertex(theta, phi) {
+    theta *= Math.PI * 2;
+    phi *= Math.PI;
+    var dir = new CSG.Vector(
+      Math.cos(theta) * Math.sin(phi),
+      Math.cos(phi),
+      Math.sin(theta) * Math.sin(phi)
+    );
+    vertices.push(new CSG.Vertex(c.plus(dir.times(r)), dir));
+  }
+  for (var i = 0; i < slices; i++) {
+    for (var j = 0; j < stacks; j++) {
+      vertices = [];
+      vertex(i / slices, j / stacks);
+      if (j > 0) vertex((i + 1) / slices, j / stacks);
+      if (j < stacks - 1) vertex((i + 1) / slices, (j + 1) / stacks);
+      vertex(i / slices, (j + 1) / stacks);
+      polygons.push(new CSG.Polygon(vertices));
+    }
+  }
+  return CSG.fromPolygons(polygons);
+};
+
+// Construct a solid cylinder. Optional parameters are `start`, `end`,
+// `radius`, and `slices`, which default to `[0, -1, 0]`, `[0, 1, 0]`, `1`, and
+// `16`. The `slices` parameter controls the tessellation.
+// 
+// Example usage:
+// 
+//     var cylinder = CSG.cylinder({
+//       start: [0, -1, 0],
+//       end: [0, 1, 0],
+//       radius: 1,
+//       slices: 16
+//     });
+CSG.cylinder = function(options) {
+  options = options || {};
+  var s = new CSG.Vector(options.start || [0, -1, 0]);
+  var e = new CSG.Vector(options.end || [0, 1, 0]);
+  var ray = e.minus(s);
+  var r = options.radius || 1;
+  var slices = options.slices || 16;
+  var axisZ = ray.unit(), isY = (Math.abs(axisZ.y) > 0.5);
+  var axisX = new CSG.Vector(isY, !isY, 0).cross(axisZ).unit();
+  var axisY = axisX.cross(axisZ).unit();
+  var start = new CSG.Vertex(s, axisZ.negated());
+  var end = new CSG.Vertex(e, axisZ.unit());
+  var polygons = [];
+  function point(stack, slice, normalBlend) {
+    var angle = slice * Math.PI * 2;
+    var out = axisX.times(Math.cos(angle)).plus(axisY.times(Math.sin(angle)));
+    var pos = s.plus(ray.times(stack)).plus(out.times(r));
+    var normal = out.times(1 - Math.abs(normalBlend)).plus(axisZ.times(normalBlend));
+    return new CSG.Vertex(pos, normal);
+  }
+  for (var i = 0; i < slices; i++) {
+    var t0 = i / slices, t1 = (i + 1) / slices;
+    polygons.push(new CSG.Polygon([start, point(0, t0, -1), point(0, t1, -1)]));
+    polygons.push(new CSG.Polygon([point(0, t1, 0), point(0, t0, 0), point(1, t0, 0), point(1, t1, 0)]));
+    polygons.push(new CSG.Polygon([end, point(1, t1, 1), point(1, t0, 1)]));
+  }
+  return CSG.fromPolygons(polygons);
+};
+
+// # class Vector
+
+// Represents a 3D vector.
+// 
+// Example usage:
+// 
+//     new CSG.Vector(1, 2, 3);
+//     new CSG.Vector([1, 2, 3]);
+//     new CSG.Vector({ x: 1, y: 2, z: 3 });
+
+CSG.Vector = function(x, y, z) {
+  if (arguments.length == 3) {
+    this.x = x;
+    this.y = y;
+    this.z = z;
+  } else if ('x' in x) {
+    this.x = x.x;
+    this.y = x.y;
+    this.z = x.z;
+  } else {
+    this.x = x[0];
+    this.y = x[1];
+    this.z = x[2];
+  }
+};
+
+CSG.Vector.prototype = {
+  clone: function() {
+    return new CSG.Vector(this.x, this.y, this.z);
+  },
+
+  negated: function() {
+    return new CSG.Vector(-this.x, -this.y, -this.z);
+  },
+
+  plus: function(a) {
+    return new CSG.Vector(this.x + a.x, this.y + a.y, this.z + a.z);
+  },
+
+  minus: function(a) {
+    return new CSG.Vector(this.x - a.x, this.y - a.y, this.z - a.z);
+  },
+
+  times: function(a) {
+    return new CSG.Vector(this.x * a, this.y * a, this.z * a);
+  },
+
+  dividedBy: function(a) {
+    return new CSG.Vector(this.x / a, this.y / a, this.z / a);
+  },
+
+  dot: function(a) {
+    return this.x * a.x + this.y * a.y + this.z * a.z;
+  },
+
+  lerp: function(a, t) {
+    return this.plus(a.minus(this).times(t));
+  },
+
+  length: function() {
+    return Math.sqrt(this.dot(this));
+  },
+
+  unit: function() {
+    return this.dividedBy(this.length());
+  },
+
+  cross: function(a) {
+    return new CSG.Vector(
+      this.y * a.z - this.z * a.y,
+      this.z * a.x - this.x * a.z,
+      this.x * a.y - this.y * a.x
+    );
+  }
+};
+
+// # class Vertex
+
+// Represents a vertex of a polygon. Use your own vertex class instead of this
+// one to provide additional features like texture coordinates and vertex
+// colors. Custom vertex classes need to provide a `pos` property and `clone()`,
+// `flip()`, and `interpolate()` methods that behave analogous to the ones
+// defined by `CSG.Vertex`. This class provides `normal` so convenience
+// functions like `CSG.sphere()` can return a smooth vertex normal, but `normal`
+// is not used anywhere else.
+
+CSG.Vertex = function(pos, normal) {
+  this.pos = new CSG.Vector(pos);
+  this.normal = new CSG.Vector(normal);
+};
+
+CSG.Vertex.prototype = {
+  clone: function() {
+    return new CSG.Vertex(this.pos.clone(), this.normal.clone());
+  },
+
+  // Invert all orientation-specific data (e.g. vertex normal). Called when the
+  // orientation of a polygon is flipped.
+  flip: function() {
+    this.normal = this.normal.negated();
+  },
+
+  // Create a new vertex between this vertex and `other` by linearly
+  // interpolating all properties using a parameter of `t`. Subclasses should
+  // override this to interpolate additional properties.
+  interpolate: function(other, t) {
+    return new CSG.Vertex(
+      this.pos.lerp(other.pos, t),
+      this.normal.lerp(other.normal, t)
+    );
+  }
+};
+
+// # class Plane
+
+// Represents a plane in 3D space.
+
+CSG.Plane = function(normal, w) {
+  this.normal = normal;
+  this.w = w;
+};
+
+// `CSG.Plane.EPSILON` is the tolerance used by `splitPolygon()` to decide if a
+// point is on the plane.
+CSG.Plane.EPSILON = 1e-5;
+
+CSG.Plane.fromPoints = function(a, b, c) {
+  var n = b.minus(a).cross(c.minus(a)).unit();
+  return new CSG.Plane(n, n.dot(a));
+};
+
+CSG.Plane.prototype = {
+  clone: function() {
+    return new CSG.Plane(this.normal.clone(), this.w);
+  },
+
+  flip: function() {
+    this.normal = this.normal.negated();
+    this.w = -this.w;
+  },
+
+  // Split `polygon` by this plane if needed, then put the polygon or polygon
+  // fragments in the appropriate lists. Coplanar polygons go into either
+  // `coplanarFront` or `coplanarBack` depending on their orientation with
+  // respect to this plane. Polygons in front or in back of this plane go into
+  // either `front` or `back`.
+  splitPolygon: function(polygon, coplanarFront, coplanarBack, front, back) {
+    var COPLANAR = 0;
+    var FRONT = 1;
+    var BACK = 2;
+    var SPANNING = 3;
+
+    // Classify each point as well as the entire polygon into one of the above
+    // four classes.
+    var polygonType = 0;
+    var types = [];
+    for (var i = 0; i < polygon.vertices.length; i++) {
+      var t = this.normal.dot(polygon.vertices[i].pos) - this.w;
+      var type = (t < -CSG.Plane.EPSILON) ? BACK : (t > CSG.Plane.EPSILON) ? FRONT : COPLANAR;
+      polygonType |= type;
+      types.push(type);
+    }
+
+    // Put the polygon in the correct list, splitting it when necessary.
+    switch (polygonType) {
+      case COPLANAR:
+        (this.normal.dot(polygon.plane.normal) > 0 ? coplanarFront : coplanarBack).push(polygon);
+        break;
+      case FRONT:
+        front.push(polygon);
+        break;
+      case BACK:
+        back.push(polygon);
+        break;
+      case SPANNING:
+        var f = [], b = [];
+        for (var i = 0; i < polygon.vertices.length; i++) {
+          var j = (i + 1) % polygon.vertices.length;
+          var ti = types[i], tj = types[j];
+          var vi = polygon.vertices[i], vj = polygon.vertices[j];
+          if (ti != BACK) f.push(vi);
+          if (ti != FRONT) b.push(ti != BACK ? vi.clone() : vi);
+          if ((ti | tj) == SPANNING) {
+            var t = (this.w - this.normal.dot(vi.pos)) / this.normal.dot(vj.pos.minus(vi.pos));
+            var v = vi.interpolate(vj, t);
+            f.push(v);
+            b.push(v.clone());
+          }
+        }
+        if (f.length >= 3) front.push(new CSG.Polygon(f, polygon.shared));
+        if (b.length >= 3) back.push(new CSG.Polygon(b, polygon.shared));
+        break;
+    }
+  }
+};
+
+// # class Polygon
+
+// Represents a convex polygon. The vertices used to initialize a polygon must
+// be coplanar and form a convex loop. They do not have to be `CSG.Vertex`
+// instances but they must behave similarly (duck typing can be used for
+// customization).
+// 
+// Each convex polygon has a `shared` property, which is shared between all
+// polygons that are clones of each other or were split from the same polygon.
+// This can be used to define per-polygon properties (such as surface color).
+
+CSG.Polygon = function(vertices, shared) {
+  this.vertices = vertices;
+  this.shared = shared;
+  this.plane = CSG.Plane.fromPoints(vertices[0].pos, vertices[1].pos, vertices[2].pos);
+};
+
+CSG.Polygon.prototype = {
+  clone: function() {
+    var vertices = this.vertices.map(function(v) { return v.clone(); });
+    return new CSG.Polygon(vertices, this.shared);
+  },
+
+  flip: function() {
+    this.vertices.reverse().map(function(v) { v.flip(); });
+    this.plane.flip();
+  }
+};
+
+// # class Node
+
+// Holds a node in a BSP tree. A BSP tree is built from a collection of polygons
+// by picking a polygon to split along. That polygon (and all other coplanar
+// polygons) are added directly to that node and the other polygons are added to
+// the front and/or back subtrees. This is not a leafy BSP tree since there is
+// no distinction between internal and leaf nodes.
+
+CSG.Node = function(polygons) {
+  this.plane = null;
+  this.front = null;
+  this.back = null;
+  this.polygons = [];
+  if (polygons) this.build(polygons);
+};
+
+CSG.Node.prototype = {
+  clone: function() {
+    var node = new CSG.Node();
+    node.plane = this.plane && this.plane.clone();
+    node.front = this.front && this.front.clone();
+    node.back = this.back && this.back.clone();
+    node.polygons = this.polygons.map(function(p) { return p.clone(); });
+    return node;
+  },
+
+  // Convert solid space to empty space and empty space to solid space.
+  invert: function() {
+    for (var i = 0; i < this.polygons.length; i++) {
+      this.polygons[i].flip();
+    }
+    this.plane.flip();
+    if (this.front) this.front.invert();
+    if (this.back) this.back.invert();
+    var temp = this.front;
+    this.front = this.back;
+    this.back = temp;
+  },
+
+  // Recursively remove all polygons in `polygons` that are inside this BSP
+  // tree.
+  clipPolygons: function(polygons) {
+    if (!this.plane) return polygons.slice();
+    var front = [], back = [];
+    for (var i = 0; i < polygons.length; i++) {
+      this.plane.splitPolygon(polygons[i], front, back, front, back);
+    }
+    if (this.front) front = this.front.clipPolygons(front);
+    if (this.back) back = this.back.clipPolygons(back);
+    else back = [];
+    return front.concat(back);
+  },
+
+  // Remove all polygons in this BSP tree that are inside the other BSP tree
+  // `bsp`.
+  clipTo: function(bsp) {
+    this.polygons = bsp.clipPolygons(this.polygons);
+    if (this.front) this.front.clipTo(bsp);
+    if (this.back) this.back.clipTo(bsp);
+  },
+
+  // Return a list of all polygons in this BSP tree.
+  allPolygons: function() {
+    var polygons = this.polygons.slice();
+    if (this.front) polygons = polygons.concat(this.front.allPolygons());
+    if (this.back) polygons = polygons.concat(this.back.allPolygons());
+    return polygons;
+  },
+
+  // Build a BSP tree out of `polygons`. When called on an existing tree, the
+  // new polygons are filtered down to the bottom of the tree and become new
+  // nodes there. Each set of polygons is partitioned using the first polygon
+  // (no heuristic is used to pick a good split).
+  build: function(polygons) {
+    if (!polygons.length) return;
+    if (!this.plane) this.plane = polygons[0].plane.clone();
+    var front = [], back = [];
+    for (var i = 0; i < polygons.length; i++) {
+      this.plane.splitPolygon(polygons[i], this.polygons, this.polygons, front, back);
+    }
+    if (front.length) {
+      if (!this.front) this.front = new CSG.Node();
+      this.front.build(front);
+    }
+    if (back.length) {
+      if (!this.back) this.back = new CSG.Node();
+      this.back.build(back);
+    }
+  }
+};
+
+/* ==========================================================================
+ * 特殊演示（Special Demos）
+ * --------------------------------------------------------------------------
+ * 只把两个外部 HTML 里的「3D 模型」搬进 APP：CSG 参数化实体、顶点配色、
+ * 解析棱线 / EdgesGeometry 棱线、材质与灯光、视角预设。
+ * 两个 HTML 里的三视图 SVG、补画视图、原题图片一律不搬（它们的视图画有问题）。
+ *
+ * ★ 模型是真正的 CSG 实体：半剖不用 clippingPlanes（那样切口敞开、看着像空心壳），
+ *   而是用 CSG 与半空间求交，重新生成「被切掉一半、带完整剖面封盖」的实体，
+ *   剖面单独着色，一眼能看出这里是实心材料。
+ *
+ * ★ 扩展方式：往下面 DEMOS 数组里加一项即可，首页卡片、视角按钮、
+ *   半剖/棱线/旋转等交互全部由注册表自动生成，不用改别处。
+ *   每项需要：id / name / desc / icon / build(cutOn, def) / target / halfH /
+ *   views / lights / halfBox / cap / grid(可选)。
+ *
+ * 独立性：本模块有自己独立的 canvas、renderer、scene、camera、controls，
+ * 不碰主实验的 scene / 面片 / 裁剪 / 状态；打开时主渲染循环自动停渲。
+ * ========================================================================== */
+var T = window.THREE;
+if (!T || typeof CSG === "undefined") return;   // 依赖缺失时静默跳过，不影响主 APP
+/* v33.38：把本 IIFE 里的 CSG 暴露给后面的「参数化草图建模」模块复用。
+   只暴露构造函数，不改任何特殊演示逻辑；主实验/测试仍走各自原有的 script。 */
+window.ConeLabCSG = CSG;
+
+/* --------------------------------------------------------------------------
+ * 通用：CSG -> 三角形 -> 带顶点色的 BufferGeometry
+ * ------------------------------------------------------------------------ */
+function spTriangles(csg) {
+  var out = [], ps = csg.toPolygons();
+  for (var i = 0; i < ps.length; i++) {
+    var v = ps[i].vertices;
+    for (var k = 1; k < v.length - 1; k++) {
+      var a = v[0].pos, b = v[k].pos, c = v[k + 1].pos;
+      out.push([a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z]);
+    }
+  }
+  return out;
+}
+
+function spGeometry(tris, cfg) {
+  var pos = new Float32Array(tris.length * 9);
+  var col = new Float32Array(tris.length * 9);
+  var lo = new T.Color(cfg.lo), mid = new T.Color(cfg.mid),
+      hi = new T.Color(cfg.hi), tmp = new T.Color();
+  var span = (cfg.maxZ - cfg.minZ) || 1;
+  var cap = cfg.cap || null;                       // 半剖时的剖面配置
+  var capCol = cap ? new T.Color(cap.color) : null;
+  var capCount = 0;
+  for (var i = 0; i < tris.length; i++) {
+    var q = tris[i];
+    pos.set(q, i * 9);
+    var h = Math.min(q[2], q[5], q[8]);
+    var f = Math.max(0, Math.min(1, (h - cfg.minZ) / span));
+    var ux = q[3] - q[0], uy = q[4] - q[1], uz = q[5] - q[2];
+    var vx = q[6] - q[0], vy = q[7] - q[1], vz = q[8] - q[2];
+    var nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    var len = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+
+    /* 剖面封盖的三个顶点都在剖切平面上，且面法线与平面法线平行。
+       位置 + 法线双判据，避免把模型里恰好也在该平面上的其它面误染成剖面色。 */
+    var isCap = false;
+    if (cap) {
+      var ax = cap.axis;
+      isCap = Math.abs(q[ax] - cap.at) < 0.02 &&
+              Math.abs(q[3 + ax] - cap.at) < 0.02 &&
+              Math.abs(q[6 + ax] - cap.at) < 0.02 &&
+              Math.abs((nx * cap.normal[0] + ny * cap.normal[1] +
+                        nz * cap.normal[2]) / len) > 0.9;
+    }
+
+    var shade = 1;
+    if (isCap) {
+      capCount++;
+      tmp.copy(capCol).multiplyScalar(1.02 + 0.10 * f);   // 剖面色 + 极淡高度层次
+    } else {
+      if (f < 0.5) tmp.copy(lo).lerp(mid, f * 2);
+      else tmp.copy(mid).lerp(hi, (f - 0.5) * 2);
+      // 演示一原版：按面法线朝上的程度给一点明暗，避免竖直圆柱面出现条纹
+      if (cfg.normalShade) shade = 0.90 + 0.10 * Math.max(0, nz / len);
+    }
+    for (var j = 0; j < 3; j++) {
+      col[i * 9 + j * 3]     = tmp.r * shade;
+      col[i * 9 + j * 3 + 1] = tmp.g * shade;
+      col[i * 9 + j * 3 + 2] = tmp.b * shade;
+    }
+  }
+  var g = new T.BufferGeometry();
+  g.setAttribute("position", new T.BufferAttribute(pos, 3));
+  g.setAttribute("color", new T.BufferAttribute(col, 3));
+  g.computeVertexNormals();
+  g.computeBoundingSphere();
+  g.computeBoundingBox();          // 供 spFit() 按屏幕比例自适应视锥
+  g.userData.capTris = capCount;   // 剖面封盖三角形数（info 与验收用）
+  return g;
+}
+
+/* 半空间盒：CSG 用它和实体求交，切面会由 CSG 自动补成真正的封盖多边形。
+   r = [x0,x1, y0,y1, z0,z1]，要足够大以完整罩住模型。 */
+function spHalfBox(r) {
+  return CSG.cube({
+    center: [(r[0] + r[1]) / 2, (r[2] + r[3]) / 2, (r[4] + r[5]) / 2],
+    radius: [(r[1] - r[0]) / 2, (r[3] - r[2]) / 2, (r[5] - r[4]) / 2]
+  });
+}
+
+/* --------------------------------------------------------------------------
+ * 特殊演示一：三视图组合体（来自 3d html/index.html + model.js）
+ * 圆盘底板 / 相切肋板 / 直立圆柱+中心通孔 / 左侧水平圆筒凸台 / 右上径向方槽
+ * ------------------------------------------------------------------------ */
+var P1 = {
+  discR: 19.3, discH: 7.1,
+  ribY: 12.8, ribTop: 19.8,
+  colR: 12.8, colTop: 45.7,
+  holeR: 8.0,
+  bossR: 11.2, boreR: 8.0, bossZ: 32.4,
+  bossX0: -26.0, bossX1: 0.0,
+  slotY: 5.0, slotZ: 32.4
+};
+var SP_SEG = 96;
+
+function sp1cylZ(z0, z1, r, seg) {
+  return CSG.cylinder({ start: [0, 0, z0], end: [0, 0, z1], radius: r, slices: seg || SP_SEG });
+}
+function sp1cylX(x0, x1, r, zc, seg) {
+  return CSG.cylinder({ start: [x0, 0, zc], end: [x1, 0, zc], radius: r, slices: seg || SP_SEG });
+}
+function sp1box(x0, x1, y0, y1, z0, z1) {
+  return CSG.cube({
+    center: [(x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2],
+    radius: [(x1 - x0) / 2, (y1 - y0) / 2, (z1 - z0) / 2]
+  });
+}
+
+function sp1Solid(halfRange) {
+  var disc = sp1cylZ(0, P1.discH, P1.discR);
+  // 肋板：矩形块 ∩ 圆柱 → 两端圆弧、上下直边的带状凸台
+  var rib = sp1box(-22, 22, -P1.ribY, P1.ribY, P1.discH - 0.12, P1.ribTop)
+    .intersect(sp1cylZ(P1.discH - 0.3, P1.ribTop + 0.3, P1.discR));
+  var column = sp1cylZ(P1.discH - 0.12, P1.colTop, P1.colR);
+  var boss = sp1cylX(P1.bossX0, P1.bossX1, P1.bossR, P1.bossZ);
+  var solid = disc.union(rib).union(column).union(boss);
+  /* ★ 半剖：在挖孔之前先与半空间求交，CSG 会补出真正的剖面封盖。
+     放在这里（而不是挖完孔再切）既等价又省 3 倍时间：
+     (A∪B − C) ∩ H  ≡  (A∪B) ∩ H − C，且 union 后的多边形远少于挖孔后。 */
+  if (halfRange) solid = solid.intersect(spHalfBox(halfRange));
+  var vHole = sp1cylZ(-1.5, P1.colTop + 1.5, P1.holeR);           // 中心垂直通孔
+  var hBore = sp1cylX(P1.bossX0 - 1.5, 0, P1.boreR, P1.bossZ);    // 水平通孔
+  var slot = sp1box(6.0, P1.colR + 2, -P1.slotY, P1.slotY,
+                    P1.slotZ, P1.colTop + 1.5);                     // 右上径向方槽
+  return solid.subtract(vHole).subtract(hBore).subtract(slot);
+}
+
+/* 解析轮廓线（model.js 的 outline）：避开 CSG 碎面造成的假棱线 */
+function sp1Outline() {
+  var v = [];
+  var R = P1.discR, CR = P1.colR, HR = P1.holeR, RY = P1.ribY,
+      BR = P1.bossR, BZ = P1.bossZ, SY = P1.slotY, SZ = P1.slotZ,
+      H = P1.discH, RT = P1.ribTop, CT = P1.colTop, BX = P1.bossX0;
+  var chordR = Math.sqrt(R * R - RY * RY);
+  var aCap = Math.asin(RY / R);
+  var aOut = Math.asin(SY / CR), aIn = Math.asin(SY / HR);
+  var sx0 = Math.sqrt(HR * HR - SY * SY), sx1 = Math.sqrt(CR * CR - SY * SY);
+
+  function seg(a, b) { v.push(a[0], a[1], a[2], b[0], b[1], b[2]); }
+  function polyXY(r, z, a0, a1) {
+    var steps = Math.max(8, Math.round(Math.abs(a1 - a0) * r * 5)), prev = null;
+    for (var i = 0; i <= steps; i++) {
+      var a = a0 + (a1 - a0) * i / steps;
+      var p = [r * Math.cos(a), r * Math.sin(a), z];
+      if (prev) seg(prev, p);
+      prev = p;
+    }
+  }
+  function circleYZ(x, r) {
+    var prev = null;
+    for (var i = 0; i <= 96; i++) {
+      var a = i * Math.PI * 2 / 96;
+      var p = [x, r * Math.cos(a), BZ + r * Math.sin(a)];
+      if (prev) seg(prev, p);
+      prev = p;
+    }
+  }
+
+  polyXY(R, 0, 0, Math.PI * 2);
+  polyXY(R, H, aCap, Math.PI - aCap);
+  polyXY(R, H, Math.PI + aCap, 2 * Math.PI - aCap);
+  [-1, 1].forEach(function (s) {
+    seg([-chordR, s * RY, H], [chordR, s * RY, H]);
+    seg([-chordR, s * RY, RT], [chordR, s * RY, RT]);
+  });
+  polyXY(R, RT, -aCap, aCap);
+  polyXY(R, RT, Math.PI - aCap, Math.PI + aCap);
+  polyXY(CR, RT, 0, Math.PI * 2);
+  polyXY(HR, 0, 0, Math.PI * 2);
+  polyXY(CR, CT, aOut, 2 * Math.PI - aOut);
+  polyXY(HR, CT, aIn, 2 * Math.PI - aIn);
+  [-1, 1].forEach(function (s) {
+    seg([sx0, s * SY, CT], [sx1, s * SY, CT]);
+    seg([sx0, s * SY, SZ], [sx1, s * SY, SZ]);
+    seg([sx0, s * SY, SZ], [sx0, s * SY, CT]);
+    seg([sx1, s * SY, SZ], [sx1, s * SY, CT]);
+  });
+  polyXY(HR, SZ, -aIn, aIn);
+  polyXY(CR, SZ, -aOut, aOut);
+  circleYZ(BX, BR);
+  circleYZ(BX, HR);
+
+  var g = new T.BufferGeometry();
+  g.setAttribute("position", new T.Float32BufferAttribute(v, 3));
+  return g;
+}
+
+function spBuild1(cutOn, def) {
+  var geom = spGeometry(spTriangles(sp1Solid(cutOn ? def.halfBox : null)), {
+    lo: 0x6e89ad, mid: 0x8ea9c9, hi: 0xc3d4e8,
+    minZ: -2, maxZ: 48, normalShade: true,
+    cap: cutOn ? def.cap : null
+  });
+  var mat = new T.MeshStandardMaterial({
+    vertexColors: true, metalness: 0.28, roughness: 0.46,
+    side: T.DoubleSide, flatShading: false
+  });
+  var mesh = new T.Mesh(geom, mat);
+  /* 完整实体用解析棱线（避开 CSG 碎面假棱线）；半剖后解析棱线已不再对应
+     被切掉的那一半，改用 EdgesGeometry 从新实体重算，能画出剖面边界。 */
+  var edgeGeo = cutOn ? new T.EdgesGeometry(geom, 28) : sp1Outline();
+  var edges = new T.LineSegments(edgeGeo,
+    new T.LineBasicMaterial({ color: 0x9fc4ff, transparent: true, opacity: 0.62 }));
+  var group = new T.Group();
+  group.add(mesh); group.add(edges);
+  return { group: group, mesh: mesh, edges: edges, geom: geom,
+           tris: geom.attributes.position.count / 3 };
+}
+
+/* --------------------------------------------------------------------------
+ * 特殊演示二：题 47 组合体（来自 p47_new/p47_solution.html 的「③ 3D」段）
+ * 前段 Φ96 圆筒 / 矩形底座 / 后段 Φ60 圆柱 / 前端沉孔 / 中间通孔 / 中央槽
+ * ------------------------------------------------------------------------ */
+var P2 = {
+  R: 48, R2: 30, half: 30, bot: -67,
+  L1: 48, L2: 84,
+  cbR: 36, cbD: 29,
+  holeR: 21.75, holeD: 72.5,
+  slotH: 12, slotBot: -59.5, slotD: 61
+};
+
+function sp2box(x0, x1, y0, y1, z0, z1) {
+  return CSG.cube({
+    center: [(x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2],
+    radius: [(x1 - x0) / 2, (y1 - y0) / 2, (z1 - z0) / 2]
+  });
+}
+function sp2cylY(y0, y1, r) {
+  return CSG.cylinder({ start: [0, y0, 0], end: [0, y1, 0], radius: r, slices: 72 });
+}
+function sp2Solid(halfRange) {
+  var solid = sp2cylY(0, P2.L1, P2.R)                              // 前段圆筒 Φ96
+    .union(sp2box(-P2.half, P2.half, 0, P2.L2, P2.bot, 0))       // 矩形底座（全长）
+    .union(sp2cylY(P2.L1, P2.L2, P2.R2));                         // 后段 Φ60 圆柱
+  // ★ 半剖同样在挖孔前求交：CSG 补出带孔的完整剖面封盖
+  if (halfRange) solid = solid.intersect(spHalfBox(halfRange));
+  var cb   = sp2cylY(-1, P2.cbD, P2.cbR);                         // 沉孔 Φ72
+  var hole = sp2cylY(P2.cbD, P2.holeD, P2.holeR);                 // 通孔 Φ43.5
+  var slot = sp2box(-P2.slotH, P2.slotH, -1, P2.slotD,
+                    P2.slotBot, 0);                                // 中央槽
+  return solid.subtract(cb).subtract(hole).subtract(slot);
+}
+
+function spBuild2(cutOn, def) {
+  var geom = spGeometry(spTriangles(sp2Solid(cutOn ? def.halfBox : null)), {
+    lo: 0x6e89ad, mid: 0x8ea9c9, hi: 0xc3d4e8,
+    minZ: P2.bot, maxZ: P2.R, normalShade: false,
+    cap: cutOn ? def.cap : null
+  });
+  var mat = new T.MeshStandardMaterial({
+    vertexColors: true, metalness: 0.22, roughness: 0.52, side: T.DoubleSide
+  });
+  var mesh = new T.Mesh(geom, mat);
+  var edges = new T.LineSegments(new T.EdgesGeometry(geom, 28),
+    new T.LineBasicMaterial({ color: 0x9fc4ff, transparent: true, opacity: 0.50 }));
+  var group = new T.Group();
+  group.add(mesh); group.add(edges);
+  return { group: group, mesh: mesh, edges: edges, geom: geom,
+           tris: geom.attributes.position.count / 3 };
+}
+
+/* --------------------------------------------------------------------------
+ * ★ 演示注册表：以后加新的特殊演示，只要往这里追加一项
+ *   lights: ["hemi",白色,地色,强度] / ["amb",色,强度] / ["dir",色,强度,[x,y,z]]
+ *   views : [{ key, label, pos:[x,y,z], up:[x,y,z], zoom }]
+ * ------------------------------------------------------------------------ */
+var DEMOS = [
+  {
+    id: "sp1",
+    name: "特殊演示一",
+    desc: "圆盘底板 · 相切肋板 · 直立圆柱与中心通孔 · 水平圆筒凸台 · 径向方槽（半剖可见实心剖面）",
+    accent: "#b79cff",
+    icon: '<svg viewBox="0 0 44 44" fill="none" stroke="#b79cff" stroke-width="2" stroke-linejoin="round">' +
+          '<ellipse cx="22" cy="33" rx="16" ry="5.5"/>' +
+          '<path d="M14 33 L14 14 A8 3 0 0 1 30 14 L30 33"/>' +
+          '<ellipse cx="22" cy="14" rx="8" ry="3"/>' +
+          '<path d="M6 22 L14 22 M6 22 A3 5 0 0 0 6 32 L14 32"/>' +
+          '<path d="M30 14 L36 14 L36 24" stroke-dasharray="3 3"/></svg>',
+    build: spBuild1,
+    target: [0, 0, 22],
+    halfH: 33,
+    grid: true,
+    /* 切掉靠近 iso 相机（y<0）的一半，保留 y ≥ 0：剖切面正好朝向默认视角，
+       一眼就能看到实心截面，而不是只从切口望进空腔。 */
+    halfBox: [-80, 80, 0, 80, -80, 80],
+    cap: { axis: 1, at: 0, normal: [0, 1, 0], color: 0xf3cf99 },
+    lights: [
+      ["hemi", 0xffffff, 0xc6d4e8, 0.62],
+      ["amb", 0xffffff, 0.22],
+      ["dir", 0xffffff, 0.86, [-38, -52, 88]],
+      ["dir", 0xdce9ff, 0.38, [48, 36, 26]]
+    ],
+    views: [
+      { key: "iso",   label: "轴测", pos: [62, -78, 58], up: [0, 0, 1], zoom: 1.0 },
+      { key: "front", label: "主视", pos: [0, -100, 22], up: [0, 0, 1], zoom: 1.12 },
+      { key: "top",   label: "俯视", pos: [0, 0, 110],   up: [0, 1, 0], zoom: 1.12 },
+      { key: "left",  label: "左视", pos: [-100, 0, 22], up: [0, 0, 1], zoom: 1.12 },
+      { key: "right", label: "右视", pos: [100, 0, 22],  up: [0, 0, 1], zoom: 1.12 }
+    ]
+  },
+  {
+    id: "sp2",
+    name: "特殊演示二",
+    desc: "题 47 组合体：前段 Φ96 圆筒 · 矩形底座 · 后段 Φ60 圆柱 · 前端沉孔与中央槽（半剖可见实心剖面）",
+    accent: "#ffc078",
+    icon: '<svg viewBox="0 0 44 44" fill="none" stroke="#ffc078" stroke-width="2" stroke-linejoin="round">' +
+          '<circle cx="20" cy="20" r="12"/><circle cx="20" cy="20" r="6"/>' +
+          '<path d="M8 32 L8 38 L32 38 L32 32 M20 32 L20 38"/>' +
+          '<path d="M32 14 L38 14 L38 26 L32 26"/></svg>',
+    build: spBuild2,
+    target: [0, 42, -10],
+    halfH: 110,
+    grid: false,
+    /* 同理：iso 相机在 +X 侧，切掉 x>0 的一半，剖面朝向相机。 */
+    halfBox: [-120, 0, -120, 120, -120, 120],
+    cap: { axis: 0, at: 0, normal: [1, 0, 0], color: 0xf3cf99 },
+    lights: [
+      ["amb", 0xffffff, 0.72],
+      ["dir", 0xffffff, 0.75, [90, -120, 160]],
+      ["dir", 0xdbe8ff, 0.30, [-120, 80, 40]]
+    ],
+    views: [
+      { key: "iso",   label: "轴测", pos: [150, -170, 120],      up: [0, 0, 1], zoom: 1.0 },
+      { key: "front", label: "主视", pos: [0, -170, 0.001],      up: [0, 0, 1], zoom: 1.0 },
+      { key: "top",   label: "俯视", pos: [0, 0.001, 170],       up: [0, 0, 1], zoom: 1.0 },
+      { key: "left",  label: "左视", pos: [-170, 0.001, 0.001],  up: [0, 0, 1], zoom: 1.0 }
+    ]
+  }
+];
+
+/* --------------------------------------------------------------------------
+ * 通用查看器（独立 canvas / renderer / scene / camera / controls）
+ * ------------------------------------------------------------------------ */
+var ov      = document.getElementById("spOverlay");
+var cv      = document.getElementById("spCanvas");
+var cardsEl = document.getElementById("spCards");
+var viewsEl = document.getElementById("spViews");
+var infoEl  = document.getElementById("spInfo");
+var nameEl  = document.getElementById("spName");
+var loadEl  = document.getElementById("spLoading");
+var btnEdges = document.getElementById("spEdges");
+var btnCut   = document.getElementById("spCut");
+var btnSpin  = document.getElementById("spSpin");
+var btnReset = document.getElementById("spReset");
+if (!ov || !cv || !cardsEl) return;   // DOM 不完整（例如无头测试）时直接退出，不抛错
+
+var renderer = null, scene = null, camera = null, controls = null;
+var cur = null, curDef = null, active = false, raf = 0, gen = 0;
+
+function spEnsureRenderer() {
+  if (renderer) return true;
+  try {
+    renderer = new T.WebGLRenderer({ canvas: cv, antialias: true, alpha: false });
+  } catch (e) { return false; }
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setClearColor(0x0e1420, 1);
+  renderer.localClippingEnabled = true;
+  scene = new T.Scene();
+  camera = new T.OrthographicCamera(-100, 100, 100, -100, 0.1, 2000);
+  camera.up.set(0, 0, 1);
+  controls = new T.OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.minZoom = 0.35;
+  controls.maxZoom = 5;
+  controls.autoRotateSpeed = 0.9;
+  return true;
+}
+
+/* 竖屏手机（aspect≈0.5）比桌面窄得多，固定 halfH 会把模型左右裁掉。
+   把包围盒 8 个角点按「每个预设视角」投影到屏幕右/上方向，取所有视角里
+   最宽的那个，反算刚好装得下的正交半高 —— 既保证任何视角都不被裁，
+   切换视角时模型大小也不会忽大忽小。桌面宽屏仍沿用注册表的 halfH。 */
+function spComputeFit(a) {
+  if (!cur || !cur.geom || !curDef) return curDef ? curDef.halfH : 100;
+  /* 半剖后包围盒会缩小一半；用「完整实体」的包围盒算视野，
+     否则一点半剖模型就会突然放大、切视角时大小也会跳。 */
+  var bb = curDef._fitBox || cur.geom.boundingBox;
+  if (!bb) return curDef.halfH;
+  var center = new T.Vector3(curDef.target[0], curDef.target[1], curDef.target[2]);
+  var best = curDef.halfH, p = new T.Vector3();
+  curDef.views.forEach(function (v) {
+    var pos = new T.Vector3(v.pos[0], v.pos[1], v.pos[2]);
+    var fwd = center.clone().sub(pos);
+    if (fwd.lengthSq() < 1e-9) return;
+    fwd.normalize();
+    var upv = new T.Vector3(v.up[0], v.up[1], v.up[2]).normalize();
+    var right = new T.Vector3().crossVectors(fwd, upv);
+    if (right.lengthSq() < 1e-6) right.set(1, 0, 0);
+    right.normalize();
+    var realUp = new T.Vector3().crossVectors(right, fwd).normalize();
+    var mx = 0, my = 0;
+    for (var i = 0; i < 8; i++) {
+      p.set((i & 1) ? bb.max.x : bb.min.x,
+            (i & 2) ? bb.max.y : bb.min.y,
+            (i & 4) ? bb.max.z : bb.min.z).sub(center);
+      mx = Math.max(mx, Math.abs(p.dot(right)));
+      my = Math.max(my, Math.abs(p.dot(realUp)));
+    }
+    // 正交相机实际可见半高 = halfH / zoom，故所需 halfH 要乘回 zoom
+    var zoom = v.zoom || 1;
+    best = Math.max(best, my * 1.12 * zoom, mx * 1.12 * zoom / a);
+  });
+  return best;
+}
+
+function spFit() {
+  if (!renderer || !curDef || !camera) return;
+  var w = cv.clientWidth, h = cv.clientHeight;
+  if (!w || !h) return;
+  var a = w / h, hh = spComputeFit(a);
+  camera.left = -hh * a; camera.right = hh * a;
+  camera.top = hh; camera.bottom = -hh;
+  camera.updateProjectionMatrix();
+  renderer.setSize(w, h, false);
+}
+
+function spDisposeModel() {
+  if (!cur) return;
+  scene.remove(cur.group);
+  cur.group.traverse(function (o) {
+    if (o.geometry && o.geometry.dispose) o.geometry.dispose();
+    if (o.material) {
+      var ms = Array.isArray(o.material) ? o.material : [o.material];
+      ms.forEach(function (m) { if (m.dispose) m.dispose(); });
+    }
+  });
+  cur = null;
+}
+
+function spAddLights(def) {
+  (def.lights || []).forEach(function (L) {
+    var light;
+    if (L[0] === "hemi") light = new T.HemisphereLight(L[1], L[2], L[3]);
+    else if (L[0] === "amb") light = new T.AmbientLight(L[1], L[2]);
+    else if (L[0] === "dir") {
+      light = new T.DirectionalLight(L[1], L[2]);
+      light.position.set(L[3][0], L[3][1], L[3][2]);
+    }
+    if (light) scene.add(light);
+  });
+}
+
+function spClearLights() {
+  if (!scene) return;
+  for (var i = scene.children.length - 1; i >= 0; i--) {
+    var o = scene.children[i];
+    if (o.isLight) scene.remove(o);
+  }
+}
+
+function spSetView(key) {
+  if (!curDef || !camera) return;
+  var v = null;
+  curDef.views.forEach(function (x) { if (x.key === key) v = x; });
+  if (!v) v = curDef.views[0];
+  if (!v) return;
+  camera.up.set(v.up[0], v.up[1], v.up[2]);
+  camera.position.set(v.pos[0], v.pos[1], v.pos[2]);
+  camera.zoom = v.zoom || 1;
+  camera.updateProjectionMatrix();
+  controls.target.set(curDef.target[0], curDef.target[1], curDef.target[2]);
+  camera.lookAt(controls.target);
+  controls.update();
+  spFit();
+  Array.prototype.forEach.call(viewsEl.children, function (b) {
+    b.classList.toggle("on", b.getAttribute("data-v") === v.key);
+  });
+}
+
+function spRenderViews(def) {
+  viewsEl.innerHTML = "";
+  def.views.forEach(function (v) {
+    var b = document.createElement("button");
+    b.setAttribute("data-v", v.key);
+    b.textContent = v.label;
+    b.addEventListener("click", function () { spSetView(v.key); });
+    viewsEl.appendChild(b);
+  });
+}
+
+function spAddGrid(group) {
+  var grid = new T.GridHelper(130, 26, 0x2c3c58, 0x22304a);
+  grid.rotation.x = Math.PI / 2;
+  grid.position.z = -0.04;
+  grid.material.transparent = true;
+  grid.material.opacity = 0.35;
+  grid.material.depthWrite = false;
+  group.add(grid);
+}
+
+/* 重建实体几何：cutOn=true 时 build() 用 CSG 与半空间求交，
+   得到「被切掉一半、带真实剖面封盖」的实体；false 时恢复完整实体。 */
+function spBuildModel(def, cutOn) {
+  spDisposeModel();
+  var m = def.build(cutOn, def);
+  if (def.grid) spAddGrid(m.group);
+  scene.add(m.group);
+  cur = m;
+  m.cutOn = cutOn;
+  /* 只拿「完整实体」的包围盒当视野基准；若第一次就是半剖状态，
+     别把缩小的包围盒记下来，否则之后恢复完整实体会被裁掉。 */
+  if (!cutOn && !def._fitBox && m.geom.boundingBox) def._fitBox = m.geom.boundingBox.clone();
+  infoEl.textContent = cutOn
+    ? ("半剖实体 · " + m.tris.toLocaleString() + " 个三角形 · 剖面封盖 " +
+       ((m.geom.userData && m.geom.userData.capTris) || 0).toLocaleString() + " 个")
+    : (m.tris.toLocaleString() + " 个三角形 · 单指旋转 / 双指缩放 / 双指平移");
+  spFit();
+  return m;
+}
+
+/* 点半剖时重新跑一次 CSG（不是改裁剪平面），所以给 loading 提示。
+   重建后保持当前视角、棱线开关和视野大小不变。 */
+function spRebuild(cutOn) {
+  if (!curDef || !renderer || !active) return;
+  var def = curDef, vk = def.views[0].key;
+  Array.prototype.forEach.call(viewsEl.children, function (b) {
+    if (b.classList.contains("on")) vk = b.getAttribute("data-v");
+  });
+  loadEl.hidden = false;
+  infoEl.textContent = cutOn ? "正在切出带封盖的实体剖面…" : "正在恢复完整实体…";
+  var myGen = ++gen;
+  setTimeout(function () {
+    if (!active || curDef !== def || myGen !== gen) return;
+    try {
+      spBuildModel(def, cutOn);
+      spSetView(vk);
+      cur.edges.visible = btnEdges.classList.contains("on");
+      loadEl.hidden = true;
+      cancelAnimationFrame(raf);
+      spLoop();
+    } catch (e) {
+      loadEl.hidden = true;
+      infoEl.textContent = "几何构建失败：" + (e && e.message ? e.message : e);
+    }
+  }, 30);
+}
+
+var _spOff = new T.Vector3();
+function spLoop() {
+  if (!active) return;
+  raf = requestAnimationFrame(spLoop);
+  controls.update();
+  /* 解析棱线 / EdgesGeometry 的顶点正好落在模型表面上，会被深度测试剔除。
+     沿视线朝相机平移 0.25mm：正面棱线浮出表面可见，背面棱线仍被实体挡住，
+     不会变成「透视看穿」的假线框。相机转动时每帧跟着更新。 */
+  if (cur && cur.edges && cur.edges.visible) {
+    _spOff.subVectors(camera.position, controls.target);
+    if (_spOff.lengthSq() > 1e-9) {
+      cur.edges.position.copy(_spOff.normalize().multiplyScalar(0.25));
+    }
+  }
+  renderer.render(scene, camera);
+}
+
+function spResetButtons() {
+  btnEdges.classList.add("on");
+  btnCut.classList.remove("on");
+  btnSpin.classList.remove("on");
+  if (controls) controls.autoRotate = false;
+}
+
+function spOpen(def) {
+  if (active) spClose(true);
+  curDef = def;
+  nameEl.textContent = def.name;
+  infoEl.textContent = "正在生成实体…";
+  loadEl.hidden = false;
+  ov.hidden = false;
+  var home = document.getElementById("home");
+  if (home) home.hidden = true;
+  window.__spActive = true;     // 主渲染循环据此停渲，避免两个 WebGL 上下文同时画
+  active = true;
+  if (!spEnsureRenderer()) {
+    loadEl.hidden = true;
+    infoEl.textContent = "当前环境无法创建 WebGL 画布";
+    return;
+  }
+  spResetButtons();
+  /* 灯光同步加好：若用户在实体还没构建完时抢先点了「半剖」，
+     spRebuild 会顶掉下面这个异步回调，此时灯光也必须已经就位，否则模型全黑。 */
+  spClearLights();
+  spAddLights(def);
+  spRenderViews(def);
+  spFit();
+  spSetView(def.views[0].key);
+  // CSG 布尔运算较重：让 loading 先绘制，再在下一帧构建
+  var myGen = ++gen;
+  setTimeout(function () {
+    if (!active || curDef !== def || myGen !== gen) return;
+    try {
+      spBuildModel(def, false);
+      cur.edges.visible = true;
+      loadEl.hidden = true;
+      cancelAnimationFrame(raf);
+      spLoop();
+    } catch (e) {
+      loadEl.hidden = true;
+      infoEl.textContent = "几何构建失败：" + (e && e.message ? e.message : e);
+    }
+  }, 40);
+}
+
+function spClose(keepOverlay) {
+  active = false;
+  gen++;                       // 作废尚未执行的异步建模
+  cancelAnimationFrame(raf);
+  window.__spActive = false;
+  spDisposeModel();
+  if (!keepOverlay) {
+    ov.hidden = true;
+    var home = document.getElementById("home");
+    if (home) home.hidden = false;   // 回到功能列表，方便直接选下一个演示
+  }
+}
+
+/* ---- 首页卡片：完全由 DEMOS 生成，新增演示无需改 HTML ---- */
+DEMOS.forEach(function (d) {
+  var b = document.createElement("button");
+  b.className = "card";
+  b.setAttribute("data-sp", d.id);
+  var ico = '<span class="ico" style="background:' + d.accent + '18;border-color:' + d.accent + '55">' +
+            d.icon + '</span>';
+  b.innerHTML = ico +
+    '<span class="txt"><span class="c-name">' + d.name + '</span>' +
+    '<span class="c-desc">' + d.desc + '</span></span><span class="go">›</span>';
+  b.addEventListener("click", function () { spOpen(d); });
+  cardsEl.appendChild(b);
+});
+
+document.getElementById("spBack").addEventListener("click", function () { spClose(false); });
+btnEdges.addEventListener("click", function () {
+  if (!cur) return;
+  cur.edges.visible = !cur.edges.visible;
+  btnEdges.classList.toggle("on", cur.edges.visible);
+});
+btnCut.addEventListener("click", function () {
+  /* 允许在实体还在构建时点：spRebuild 会顶掉旧的异步构建回调，
+     直接按新状态生成带封盖的实体；灯光已在 spOpen 里同步加好。 */
+  if (!active || !curDef || !renderer) return;
+  var on = !btnCut.classList.contains("on");
+  btnCut.classList.toggle("on", on);
+  spRebuild(on);
+});
+btnSpin.addEventListener("click", function () {
+  if (!controls) return;
+  controls.autoRotate = !controls.autoRotate;
+  btnSpin.classList.toggle("on", controls.autoRotate);
+});
+btnReset.addEventListener("click", function () { if (curDef) spSetView(curDef.views[0].key); });
+window.addEventListener("resize", function () { if (active) spFit(); });
+
+/* 暴露一个只读入口，方便以后从别处（如快捷入口）唤起某个演示 */
+window.SpecialDemos = {
+  list: DEMOS,
+  open: function (id) {
+    DEMOS.forEach(function (d) { if (d.id === id) spOpen(d); });
+  },
+  close: function () { spClose(false); },
+  isOpen: function () { return active; },
+  isCut: function () { return btnCut.classList.contains("on"); }
+};
+
+})();
+</script>
+
+<script>
+/* ==========================================================================
+ * v33.41 — 参数化草图建模工作台（特征联动 + 草图锁定 + 清空）
+ *
+ * 在 v33.40 一体化舞台基础上：
+ *   1. 特征↔草图联动：拉伸/切除/旋转/圆角/打孔都进 S.features 有序列表，记录所引用的
+ *      草图实体 id + 草图快照；草图尺寸/位置改变后 markDirty() 自动按序重建全部特征，
+ *      模型跟着变（id 失效时回退用快照，保证模型不消失）。
+ *   2. 「草图绘制」开关：关掉后草图锁定（不能画/删/拖/改尺寸），可继续做特征；
+ *      再点一次解锁继续编辑。
+ *   3. 「清空」按钮：两次确认对话框后才清空全部草图/特征/模型并复位基准面。
+ *   4. 画完一个图形自动切回「选择」工具（单指恢复旋转视角）；绘图工具下双指=旋转+缩放。
+ * ========================================================================== */
+(function () {
+"use strict";
+
+var CL_T = window.THREE;
+var CL_CSG = window.ConeLabCSG;
+if (!CL_T || !CL_CSG) return;
+
+/* --------------------------------------------------------------------------
+ * 0. 样式与 DOM
+ * ------------------------------------------------------------------------ */
+var css = document.createElement("style");
+css.id = "clCss";
+css.textContent = [
+"#cadLab{position:fixed;inset:0;z-index:70;display:flex;flex-direction:column;background:#eef2f7;color:#203046;font-family:system-ui,-apple-system,'Microsoft YaHei',sans-serif;overflow:hidden;touch-action:none}",
+"#cadLab[hidden]{display:none}",
+"#cadLab *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}",
+".cl-head{height:54px;flex:0 0 54px;display:flex;align-items:center;gap:8px;padding:6px 10px;background:rgba(255,255,255,.94);border-bottom:1px solid #d9e1ec;box-shadow:0 1px 4px rgba(31,54,88,.06)}",
+".cl-back{width:34px;height:34px;border-radius:11px;border:1px solid #d9e1ec;background:#f7f9fc;color:#3c5575;font-size:21px;line-height:1}",
+".cl-brand{flex:1;min-width:0;line-height:1.25}",
+".cl-brand b{display:block;font-size:14px;color:#213753}",
+".cl-brand small{display:block;font-size:10px;color:#7b8ca2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px}",
+".cl-body{flex:1;display:flex;min-height:0;gap:5px;padding:5px}",
+".cl-rail{width:46px;flex:0 0 46px;background:rgba(255,255,255,.94);border:1px solid #dde5ef;border-radius:13px;padding:4px 3px;overflow-y:auto;display:flex;flex-direction:column;gap:2px;box-shadow:0 2px 8px rgba(30,60,110,.05)}",
+".cl-grp{display:flex;flex-direction:column}",
+".cl-grp-h{display:flex;align-items:center;justify-content:space-between;border:0;background:transparent;padding:4px 6px 2px;font-size:9px;color:#8fa0b6;letter-spacing:.4px;cursor:pointer}",
+".cl-grp-h i{font-style:normal;font-size:8px;color:#a9b8c9;transition:transform .15s}",
+".cl-grp.closed .cl-grp-h i{transform:rotate(-90deg)}",
+".cl-grp-tools{display:flex;flex-direction:column;gap:2px}",
+".cl-grp.closed .cl-grp-tools{display:none}",
+".cl-rail::-webkit-scrollbar,.cl-inspector::-webkit-scrollbar{width:0}",
+".cl-tool{border:0;background:transparent;border-radius:10px;padding:5px 2px 4px;display:flex;flex-direction:column;align-items:center;gap:2px;color:#61748d;font-size:10px;line-height:1}",
+".cl-tool svg{width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}",
+".cl-tool.on{background:#e6edff;color:#2f5fe0;font-weight:600}",
+".cl-tool.off{opacity:.35}",
+"#clConfirm{position:absolute;inset:0;z-index:12;background:rgba(20,32,50,.45);display:flex;align-items:center;justify-content:center}",
+"#clConfirm[hidden]{display:none}",
+".cl-cbox{background:#fff;border-radius:14px;padding:18px 16px 14px;width:80%;max-width:330px;box-shadow:0 10px 40px rgba(10,24,48,.35);text-align:center}",
+".cl-cbox p{font-size:13px;color:#213753;line-height:1.6;margin:0 0 14px}",
+".cl-cbox p b{color:#c0392b}",
+".cl-cbox .cl-crow{display:flex;gap:8px}",
+".cl-cbox button{flex:1;height:38px;border-radius:9px;border:1px solid #dbe3ee;background:#f6f8fb;color:#39506e;font-size:13px}",
+".cl-cbox button.danger{background:#d9534f;border-color:#d9534f;color:#fff;font-weight:600}",
+".cl-stage{position:relative;flex:1;min-width:0;border-radius:13px;overflow:hidden;border:1px solid #dde5ef;background:#e9eef5;box-shadow:inset 0 1px 8px rgba(34,62,100,.045)}",
+".cl-stage canvas{position:absolute;inset:0;width:100%;height:100%;display:block;touch-action:none}",
+/* 属性面板 = 悬浮层：收起后 3D 区占满整个舞台 */
+".cl-inspector{position:absolute;top:8px;right:8px;bottom:8px;width:178px;z-index:8;background:rgba(255,255,255,.96);border:1px solid #dde5ef;border-radius:13px;overflow-y:auto;padding:8px;box-shadow:0 5px 20px rgba(24,52,96,.16);transition:transform .18s ease;font-size:12px}",
+".cl-inspector.closed{transform:translateX(calc(100% + 14px));pointer-events:none}",
+"#clInspTab{position:absolute;top:50%;margin-top:-21px;right:0;width:22px;height:42px;z-index:9;border:1px solid #d5deea;border-right:0;border-radius:10px 0 0 10px;background:rgba(255,255,255,.95);color:#3c5575;font-size:13px;line-height:1;display:flex;align-items:center;justify-content:center;box-shadow:-2px 2px 8px rgba(24,52,96,.12)}",
+".cl-ball{position:absolute;width:42px;height:42px;margin:-21px 0 0 -21px;border-radius:50%;pointer-events:none;display:none;z-index:5;background:radial-gradient(circle at 36% 30%,rgba(255,255,255,.98),rgba(150,196,255,.62) 55%,rgba(64,126,225,.30));border:1.5px solid rgba(255,255,255,.95);box-shadow:0 3px 12px rgba(43,91,170,.36),inset 0 -3px 8px rgba(57,112,205,.18)}",
+".cl-ball:after{content:'';position:absolute;left:50%;top:50%;width:7px;height:7px;margin:-3.5px;border-radius:50%;background:#2f5fe0;box-shadow:0 0 0 2px rgba(255,255,255,.9)}",
+".cl-ball.on{display:block}",
+"#clLabels{position:absolute;inset:0;pointer-events:none;z-index:6}",
+".cl-label{position:absolute;transform:translate(-50%,-140%);background:#fff2d6;border:1px solid #e5a23d;color:#a25f13;font-size:10px;padding:1px 6px;border-radius:5px;white-space:nowrap;font-variant-numeric:tabular-nums}",
+".cl-toast{position:absolute;left:50%;bottom:16px;transform:translateX(-50%);background:rgba(31,49,75,.90);color:#fff;font-size:12px;padding:7px 13px;border-radius:9px;opacity:0;transition:opacity .2s;pointer-events:none;z-index:10;white-space:nowrap;max-width:92%;overflow:hidden;text-overflow:ellipsis}",
+".cl-toast.on{opacity:1}",
+".cl-coord{position:absolute;left:10px;bottom:8px;font-size:10px;color:#8192a8;pointer-events:none;z-index:4;font-variant-numeric:tabular-nums}",
+".cl-sec{margin-bottom:10px;border-bottom:1px solid #e8edf4;padding-bottom:8px}",
+".cl-sec:last-child{border-bottom:0}",
+/* 分区可折叠：点标题收起/展开，小三角指示 */
+".cl-sec h4{margin:0 0 6px;font-size:11px;color:#8192a8;font-weight:600;letter-spacing:.4px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;user-select:none;-webkit-user-select:none}",
+".cl-sec h4 i{font-style:normal;font-size:9px;color:#9fb0c4;transition:transform .15s}",
+".cl-sec.closed h4 i{transform:rotate(-90deg)}",
+".cl-sec.closed > *:not(h4){display:none}",
+".cl-row{display:flex;gap:5px;align-items:center;margin:4px 0}",
+".cl-row>span{flex:0 0 42px;color:#7b8ca2;font-size:11px}",
+".cl-row input,.cl-row select{flex:1;min-width:0;background:#f6f8fb;border:1px solid #dbe3ee;border-radius:7px;padding:5px 6px;font-size:12px;color:#243851;outline:none}",
+".cl-row input:focus,.cl-row select:focus{border-color:#6f96ee;background:#fff}",
+".cl-plane{display:flex;align-items:center;gap:5px;padding:5px 6px;margin:3px 0;border:1px solid #e0e7f0;border-radius:8px;background:#f9fbfe;cursor:pointer;font-size:11px}",
+".cl-plane.on{border-color:#6f96ee;background:#eaf0ff;color:#2f5fe0;font-weight:600}",
+".cl-plane i{width:8px;height:8px;border-radius:3px;flex:0 0 8px}",
+".cl-plane em{margin-left:auto;font-style:normal;color:#95a4b7;font-size:10px}",
+".cl-btn{border:1px solid #d9e2ee;background:#fff;color:#39506e;border-radius:8px;padding:6px 8px;font-size:11px;cursor:pointer;flex:1;min-width:0}",
+".cl-btn.on{background:#e6edff;border-color:#8fadf5;color:#2f5fe0;font-weight:600}",
+".cl-btn.pri{background:#2f5fe0;border-color:#2f5fe0;color:#fff;font-weight:600}",
+".cl-btn.teal{background:#0f9f8f;border-color:#0f9f8f;color:#fff;font-weight:600}",
+".cl-list{max-height:120px;overflow-y:auto}",
+".cl-ent{display:flex;align-items:center;gap:4px;padding:4px 5px;margin:2px 0;border:1px solid #e5ebf3;border-radius:7px;font-size:11px;cursor:pointer;background:#fbfcfe}",
+".cl-ent.on{border-color:#7ba0f2;background:#edf2ff;color:#2f5fe0}",
+".cl-ent b{flex:1;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+".cl-ent s{color:#b26a7a;text-decoration:none;padding:0 2px}",
+".cl-hint{font-size:10px;color:#93a2b5;line-height:1.5;margin-top:5px}",
+".cl-foot{height:50px;flex:0 0 50px;display:flex;align-items:center;gap:6px;padding:6px 10px calc(6px + env(safe-area-inset-bottom,0px));background:rgba(255,255,255,.96);border-top:1px solid #d9e1ec}",
+".cl-foot button{height:34px;border-radius:9px;border:1px solid #dbe3ee;background:#fff;color:#4c6180;font-size:12px;padding:0 8px;flex:1;white-space:nowrap}",
+".cl-foot button.on{background:#e6edff;border-color:#8fadf5;color:#2f5fe0;font-weight:600}",
+".cl-foot button.pri{background:#2f5fe0;border-color:#2f5fe0;color:#fff;font-weight:600}",
+"@media(max-width:560px){.cl-inspector{width:158px;padding:6px}.cl-tool{font-size:9px}.cl-tool svg{width:17px;height:17px}.cl-brand small{max-width:130px}}"
+].join("\n");
+document.head.appendChild(css);
+
+var root = document.createElement("div");
+root.id = "cadLab";
+root.hidden = true;
+root.innerHTML = [
+'<header class="cl-head">',
+'  <button id="clBack" class="cl-back" title="返回功能列表">‹</button>',
+'  <div class="cl-brand"><b>参数化建模台</b><small id="clStatus">选择工具画草图 · 选择工具可旋转视角 / 拾取模型面</small></div>',
+'</header>',
+'<div class="cl-body">',
+'  <aside class="cl-rail" id="clRail"></aside>',
+'  <main class="cl-stage" id="clStage">',
+'    <canvas id="clView"></canvas>',
+'    <div id="clLabels"></div>',
+'    <div id="clBall" class="cl-ball"></div><div id="clCoord" class="cl-coord">U 0.00  V 0.00</div>',
+'    <div id="clToast" class="cl-toast"></div>',
+'    <div id="clConfirm" hidden><div class="cl-cbox"><p id="clConfirmMsg"></p><div class="cl-crow"><button id="clCancelClr">取消</button><button id="clOkClr">确定清空</button></div></div></div>',
+'    <button id="clInspTab" title="收起 / 展开属性面板">›</button>',
+'  </main>',
+'  <aside class="cl-inspector" id="clInspector"></aside>',
+'</div>',
+'<footer class="cl-foot">',
+'  <button id="clSketch" class="on">草图绘制</button>',
+'  <button id="clUndo">↶</button><button id="clRedo">↷</button>',
+'  <button id="clFront">正视</button><button id="clClear" style="color:#c0392b;border-color:#eec3c1">清空</button>',
+'</footer>'
+].join("");
+document.body.appendChild(root);
+
+var $ = function (id) { return document.getElementById(id); };
+var rail = $("clRail"), view = $("clView"), stage = $("clStage");
+var inspector = $("clInspector"), ball = $("clBall"), toastEl = $("clToast");
+var labelsEl = $("clLabels"), inspTab = $("clInspTab");
+stage.appendChild(inspector);   // 面板是舞台内的悬浮层，收起后 3D 区占满
+var coordEl = $("clCoord");
+
+/* --------------------------------------------------------------------------
+ * 1. 状态 / 基准面 / 通用工具
+ * ------------------------------------------------------------------------ */
+var S = {
+  active: false, prevActive: false, tool: "select", sketchOn: true,
+  planeId: "front", planes: [], entities: [], seq: 1,
+  grid: true, dims: true, features: [], confirmStage: 0, rebuildTimer: 0,
+  preview: null, drag: null, arcStep: 0, arcData: null, splinePts: [],
+  trimPts: null, pointers: {}, tap: null,
+  solid: null, mesh: null, edges: null, pickedEdge: null, hilite: null,
+  skGroups: {}, gridGroup: null, dynGroup: null,
+  r3: null, scene3: null, cam3: null, ctrl3: null, raf3: 0,
+  feature: { start: 0, end: 10, dir: 1, bool: "auto", axis: "u", angle: 360, radius: 2, partial: false },
+  hole: { x: 0, y: 0, d: 6, depth: 12, type: "normal", cbD: 10, cbDepth: 4, csAngle: 90 },
+  newPlane: { type: "offset", ref: "front", angle: 45, dist: 10 },
+  inspOpen: window.innerWidth >= 620,
+  grpOpen: { base: true, draw: true, array: true },
+  secOpen: { planes: true, ents: true, feat: true, post: false, pattern: true },
+  history: [], future: [], toastTimer: 0
+};
+function syncInsp() {
+  inspector.classList.toggle("closed", !S.inspOpen);
+  inspTab.textContent = S.inspOpen ? "›" : "‹";
+}
+function V3(a) { return new CL_T.Vector3(a[0], a[1], a[2]); }
+function copyObj(o) { return JSON.parse(JSON.stringify(o)); }
+function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
+function num(v, d) { v = parseFloat(v); return isFinite(v) ? v : d; }
+function toast(msg) {
+  toastEl.textContent = msg; toastEl.classList.add("on");
+  clearTimeout(S.toastTimer);
+  S.toastTimer = setTimeout(function () { toastEl.classList.remove("on"); }, 2100);
+  var st = $("clStatus"); if (st) st.textContent = msg;
+}
+
+function basePlanes() {
+  return [
+    { id: "front", name: "正视基准面", tag: "前视", type: "front", origin: [0, 0, 0], u: [1, 0, 0], v: [0, 0, 1], n: [0, -1, 0], color: "#3563e9" },
+    { id: "top", name: "俯视基准面", tag: "俯视", type: "top", origin: [0, 0, 0], u: [1, 0, 0], v: [0, 1, 0], n: [0, 0, 1], color: "#0f9f8f" },
+    { id: "left", name: "左视基准面", tag: "左视", type: "left", origin: [0, 0, 0], u: [0, 1, 0], v: [0, 0, 1], n: [-1, 0, 0], color: "#e39743" }
+  ];
+}
+function plane() {
+  for (var i = 0; i < S.planes.length; i++) if (S.planes[i].id === S.planeId) return S.planes[i];
+  return S.planes[0];
+}
+function planeById(id) {
+  for (var i = 0; i < S.planes.length; i++) if (S.planes[i].id === id) return S.planes[i];
+  return plane();
+}
+function addPlaneFromUI() {
+  var cfg = S.newPlane, ref = planeById(cfg.ref);
+  var a = cfg.angle * Math.PI / 180, n, u, v, o = ref.origin.slice();
+  if (cfg.type === "offset") {
+    n = ref.n.slice(); u = ref.u.slice(); v = ref.v.slice();
+    o = [o[0] + n[0] * cfg.dist, o[1] + n[1] * cfg.dist, o[2] + n[2] * cfg.dist];
+  } else if (cfg.type === "fv") {          // 正垂面：法向在 XY 平面内
+    n = [Math.sin(a), Math.cos(a), 0]; u = [Math.cos(a), -Math.sin(a), 0]; v = [0, 0, 1];
+  } else if (cfg.type === "pv") {          // 铅垂面：法向在 XZ 平面内
+    n = [Math.cos(a), 0, Math.sin(a)]; u = [-Math.sin(a), 0, Math.cos(a)]; v = [0, 1, 0];
+  } else {                                  // 侧垂面：法向在 YZ 平面内
+    n = [0, Math.cos(a), Math.sin(a)]; u = [1, 0, 0]; v = [0, -Math.sin(a), Math.cos(a)];
+  }
+  var p = {
+    id: "p" + (S.planes.length + 1),
+    name: ({ offset: "偏置基准面", fv: "正垂基准面", pv: "铅垂基准面", lv: "侧垂基准面" })[cfg.type],
+    tag: cfg.type === "offset" ? ("距" + cfg.dist) : (Math.round(cfg.angle) + "°"),
+    type: cfg.type, origin: o, u: u, v: v, n: n, color: "#7d63d8"
+  };
+  S.planes.push(p); S.planeId = p.id;
+  facePlane(); refreshAll();
+  toast("已添加" + p.name + " · 视角已转正对该面");
+  return p;
+}
+/* 拾取模型表面生成的基准面 */
+function addFacePlane(hit) {
+  var n = hit.face.normal.clone().normalize();
+  if (n.lengthSq() < 0.5) return null;
+  var axes = [new CL_T.Vector3(1, 0, 0), new CL_T.Vector3(0, 1, 0), new CL_T.Vector3(0, 0, 1)];
+  var u = axes[0], best = 1;
+  axes.forEach(function (a) { var d = Math.abs(a.dot(n)); if (d < best - 1e-6) { best = d; u = a; } });
+  var v = new CL_T.Vector3().crossVectors(n, u).normalize();
+  u = new CL_T.Vector3().crossVectors(v, n).normalize();   // 保证 u×v=n（右手系）
+  var o = hit.point.clone();
+  var p = {
+    id: "f" + (S.planes.length + 1),
+    name: "模型面基准面", tag: "拾取面", type: "face",
+    origin: [+o.x.toFixed(2), +o.y.toFixed(2), +o.z.toFixed(2)],
+    u: [+u.x.toFixed(4), +u.y.toFixed(4), +u.z.toFixed(4)],
+    v: [+v.x.toFixed(4), +v.y.toFixed(4), +v.z.toFixed(4)],
+    n: [+n.x.toFixed(4), +n.y.toFixed(4), +n.z.toFixed(4)],
+    color: "#d8667e"
+  };
+  S.planes.push(p); S.planeId = p.id;
+  facePlane(); refreshAll();
+  toast("已拾取模型面 · 可直接画草图（切除自动朝材料内）");
+  return p;
+}
+function toWorldOn(pl, x, y, z) {
+  z = z || 0;
+  return new CL_T.Vector3(
+    pl.origin[0] + pl.u[0] * x + pl.v[0] * y + pl.n[0] * z,
+    pl.origin[1] + pl.u[1] * x + pl.v[1] * y + pl.n[1] * z,
+    pl.origin[2] + pl.u[2] * x + pl.v[2] * y + pl.n[2] * z
+  );
+}
+function toWorld(x, y, z) { return toWorldOn(plane(), x, y, z); }
+function planeMatrixOn(pl) {
+  var m = new CL_T.Matrix4().makeBasis(V3(pl.u), V3(pl.v), V3(pl.n));
+  m.setPosition(V3(pl.origin));
+  return m;
+}
+function planeMatrix() { return planeMatrixOn(plane()); }
+/* 相机转到当前基准面的正视方向（进入草图即看到该面的“图纸视角”） */
+function facePlane() {
+  if (!S.cam3) return;
+  var p = plane(), o = V3(p.origin), n = V3(p.n);
+  var half = (S.cam3.top - S.cam3.bottom) / 2 / Math.max(0.05, S.cam3.zoom || 1);
+  var dist = Math.max(160, half * 3);
+  S.cam3.up.set(p.v[0], p.v[1], p.v[2]);
+  S.cam3.position.copy(o).addScaledVector(n, dist);
+  S.cam3.lookAt(o);
+  if (S.ctrl3) { S.ctrl3.target.copy(o); S.ctrl3.update(); }
+}
+function snapshot() {
+  S.history.push({ e: copyObj(S.entities), p: S.planeId, s: S.solid ? S.solid.clone() : null, f: copyObj(S.features) });
+  if (S.history.length > 25) S.history.shift();
+  S.future.length = 0;
+}
+function restore(st) {
+  S.entities = copyObj(st.e); S.planeId = st.p; S.solid = st.s ? st.s.clone() : null;
+  S.features = st.f ? copyObj(st.f) : [];
+  S.preview = null; S.pickedEdge = null; S.trimPts = null;
+  refreshAll(); rebuild3D();
+}
+function undo() {
+  if (!S.history.length) { toast("没有可撤销的操作"); return; }
+  S.future.push({ e: copyObj(S.entities), p: S.planeId, s: S.solid ? S.solid.clone() : null });
+  restore(S.history.pop()); toast("已撤销");
+}
+function redo() {
+  if (!S.future.length) { toast("没有可重做的操作"); return; }
+  S.history.push({ e: copyObj(S.entities), p: S.planeId, s: S.solid ? S.solid.clone() : null });
+  restore(S.future.pop()); toast("已重做");
+}
+
+/* --------------------------------------------------------------------------
+ * 2. 草图实体（归属基准面 e.pl）
+ * ------------------------------------------------------------------------ */
+function point(x, y) { return { x: x, y: y }; }
+function dist(a, b) { var dx = a.x - b.x, dy = a.y - b.y; return Math.sqrt(dx * dx + dy * dy); }
+function rotPt(p, c, ang) {
+  var co = Math.cos(ang), si = Math.sin(ang), x = p.x - c.x, y = p.y - c.y;
+  return point(c.x + x * co - y * si, c.y + x * si + y * co);
+}
+function resample(e) {
+  var d = e.def, pts = [], i, k, a;
+  if (e.kind === "line") {
+    pts = [point(d.ax, d.ay), point(d.bx, d.by)];
+  } else if (e.kind === "rect") {
+    pts = [point(d.x0, d.y0), point(d.x1, d.y0), point(d.x1, d.y1), point(d.x0, d.y1)];
+  } else if (e.kind === "square") {
+    var h = d.size / 2;
+    pts = [point(-h, -h), point(h, -h), point(h, h), point(-h, h)].map(function (q) { return rotPt(q, point(d.cx, d.cy), d.rot || 0); });
+  } else if (e.kind === "circle") {
+    for (i = 0; i < 64; i++) { a = i * Math.PI * 2 / 64; pts.push(point(d.cx + d.r * Math.cos(a), d.cy + d.r * Math.sin(a))); }
+  } else if (e.kind === "ellipse") {
+    for (i = 0; i < 64; i++) {
+      a = i * Math.PI * 2 / 64;
+      var ex = d.rx * Math.cos(a), ey = d.ry * Math.sin(a), ro = d.rot || 0;
+      pts.push(point(d.cx + ex * Math.cos(ro) - ey * Math.sin(ro), d.cy + ex * Math.sin(ro) + ey * Math.cos(ro)));
+    }
+  } else if (e.kind === "arc") {
+    var sweep = d.a1 - d.a0, n = Math.max(10, Math.ceil(Math.abs(sweep) / 0.06));
+    for (i = 0; i <= n; i++) { a = d.a0 + sweep * i / n; pts.push(point(d.cx + d.r * Math.cos(a), d.cy + d.r * Math.sin(a))); }
+  } else if (e.kind === "spline") {
+    var raw = d.pts || [], sub = 8;
+    if (raw.length >= 2) {
+      for (k = 0; k < raw.length - 1; k++) {
+        var p0 = raw[Math.max(0, k - 1)], p1 = raw[k], p2 = raw[k + 1], p3 = raw[Math.min(raw.length - 1, k + 2)];
+        for (i = 0; i < sub; i++) {
+          var t = i / sub, t2 = t * t, t3 = t2 * t;
+          pts.push(point(
+            0.5 * ((2 * p1.x) + (-p0.x + p2.x) * t + (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * t2 + (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * t3),
+            0.5 * ((2 * p1.y) + (-p0.y + p2.y) * t + (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * t2 + (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * t3)
+          ));
+        }
+      }
+      pts.push(raw[raw.length - 1]);
+    }
+  } else if (e.kind === "slot") {
+    var half = d.len / 2, ar = d.r, ro2 = d.rot || 0, m = 16;
+    for (i = 0; i <= m; i++) { a = -Math.PI / 2 + Math.PI * i / m; pts.push(rotPt(point(half + ar * Math.cos(a), ar * Math.sin(a)), point(0, 0), ro2)); }
+    for (i = 0; i <= m; i++) { a = Math.PI / 2 + Math.PI * i / m; pts.push(rotPt(point(-half + ar * Math.cos(a), ar * Math.sin(a)), point(0, 0), ro2)); }
+    for (i = 0; i < pts.length; i++) { var q = rotPt(pts[i], point(0, 0), ro2); pts[i] = point(q.x + d.cx, q.y + d.cy); }
+  } else if (e.kind === "polygon") {
+    var np = Math.max(3, d.n | 0);
+    for (i = 0; i < np; i++) { a = (d.rot || 0) - Math.PI / 2 + i * Math.PI * 2 / np; pts.push(point(d.cx + d.r * Math.cos(a), d.cy + d.r * Math.sin(a))); }
+  } else if (e.kind === "poly") {
+    pts = copyObj(d.pts || []);
+  }
+  e.pts = pts;
+  return pts;
+}
+var CLOSED = { rect: 1, square: 1, circle: 1, ellipse: 1, slot: 1, polygon: 1 };
+function newEntity(kind, def) {
+  var e = { id: "e" + (S.seq++), kind: kind, def: def, pts: [], closed: !!CLOSED[kind], sel: false, pl: S.planeId };
+  if (kind === "poly") e.closed = !!def.closed;
+  resample(e);
+  return e;
+}
+function addEntity(kind, def, select) {
+  snapshot();
+  var e = newEntity(kind, def);
+  S.entities.push(e);
+  if (select !== false) S.entities.forEach(function (o) { o.sel = (o.id === e.id); });
+  refreshAll();
+  return e;
+}
+function pointInPoly(p, poly) {
+  var inside = false;
+  for (var i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    var a = poly[i], b = poly[j];
+    if (((a.y > p.y) !== (b.y > p.y)) && (p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x)) inside = !inside;
+  }
+  return inside;
+}
+function segDist(p, a, b) {
+  var dx = b.x - a.x, dy = b.y - a.y, l2 = dx * dx + dy * dy;
+  if (l2 < 1e-12) return dist(p, a);
+  var t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / l2));
+  return dist(p, point(a.x + t * dx, a.y + t * dy));
+}
+/* 命中测试：优先当前基准面的实体，其次其它面（3D 里直接点线也能选中） */
+function hitEntity(p) {
+  var tol = pickTol(), i, j, e;
+  var order = [];
+  S.entities.forEach(function (q) { if (q.pl === S.planeId) order.push(q); });
+  S.entities.forEach(function (q) { if (q.pl !== S.planeId) order.push(q); });
+  for (i = order.length - 1; i >= 0; i--) {
+    e = order[i];
+    if (e.closed && e.pts.length > 2 && pointInPoly(p, e.pts)) return e;
+    for (j = 0; j < e.pts.length - 1; j++) if (segDist(p, e.pts[j], e.pts[j + 1]) < tol) return e;
+    if (e.closed && e.pts.length > 2 && segDist(p, e.pts[e.pts.length - 1], e.pts[0]) < tol) return e;
+  }
+  return null;
+}
+function selectedEntities() { return S.entities.filter(function (e) { return e.sel; }); }
+function dimFields(e) {
+  var d = e.def, out = [];
+  if (e.kind === "line") out.push(["长度", "len", dist(point(d.ax, d.ay), point(d.bx, d.by)), "mm"]);
+  else if (e.kind === "rect") { out.push(["长", "w", Math.abs(d.x1 - d.x0), "mm"]); out.push(["宽", "h", Math.abs(d.y1 - d.y0), "mm"]); }
+  else if (e.kind === "square") out.push(["边长", "size", d.size, "mm"]);
+  else if (e.kind === "circle") out.push(["直径", "dia", d.r * 2, "mm"]);
+  else if (e.kind === "arc") out.push(["半径", "r", d.r, "mm"]);
+  else if (e.kind === "ellipse") { out.push(["长轴", "rx", d.rx * 2, "mm"]); out.push(["短轴", "ry", d.ry * 2, "mm"]); }
+  else if (e.kind === "slot") { out.push(["圆心距", "len", d.len, "mm"]); out.push(["圆弧半径", "r", d.r, "mm"]); }
+  else if (e.kind === "polygon") { out.push(["边数", "n", d.n, "边"]); out.push(["内切圆直径", "inDia", 2 * d.r * Math.cos(Math.PI / d.n), "mm"]); }
+  else if (e.kind === "spline") out.push(["控制点", "np", (d.pts || []).length, "个"]);
+  else out.push(["顶点数", "np", (d.pts || []).length, "个"]);
+  return out;
+}
+function applyDim(e, key, val) {
+  var d = e.def;
+  if (key === "len" && e.kind === "line") {
+    var dx = d.bx - d.ax, dy = d.by - d.ay, L = Math.sqrt(dx * dx + dy * dy) || 1;
+    d.bx = d.ax + dx / L * val; d.by = d.ay + dy / L * val;
+  } else if (key === "w" || key === "h") {
+    var midx = (d.x0 + d.x1) / 2, midy = (d.y0 + d.y1) / 2, w = Math.abs(d.x1 - d.x0) / 2, h = Math.abs(d.y1 - d.y0) / 2;
+    if (key === "w") w = val / 2; else h = val / 2;
+    d.x0 = midx - w; d.x1 = midx + w; d.y0 = midy - h; d.y1 = midy + h;
+  } else if (key === "size") d.size = val;
+  else if (key === "dia") d.r = val / 2;
+  else if (key === "r") d.r = val;
+  else if (key === "rx") d.rx = val / 2;
+  else if (key === "ry") d.ry = val / 2;
+  else if (key === "inDia") d.r = val / (2 * Math.cos(Math.PI / d.n));
+  else if (key === "n") d.n = Math.max(3, Math.min(24, Math.round(val)));
+  else return;
+  resample(e); refreshAll(); markDirty();
+}
+
+/* --------------------------------------------------------------------------
+ * 3. 屏幕↔草图坐标（射线打到当前基准面）
+ * ------------------------------------------------------------------------ */
+function worldPerPixel() {
+  if (!S.cam3) return 0.5;
+  var r = view.getBoundingClientRect();
+  if (r.height < 2) return 0.5;
+  var half = (S.cam3.top - S.cam3.bottom) / 2 / Math.max(0.05, S.cam3.zoom || 1);
+  return half * 2 / r.height;
+}
+function pickTol() { return 7 * worldPerPixel(); }
+function pointerXY(ev) {
+  var r = view.getBoundingClientRect();
+  return { x: ev.clientX - r.left, y: ev.clientY - r.top };
+}
+function raySketch(ev) {
+  if (!S.cam3) return null;
+  var s = pointerXY(ev), r = view.getBoundingClientRect();
+  var m = new CL_T.Vector2((s.x / r.width) * 2 - 1, -(s.y / r.height) * 2 + 1);
+  var ray = new CL_T.Raycaster();
+  ray.setFromCamera(m, S.cam3);
+  var pl = plane();
+  var tp = new CL_T.Plane().setFromNormalAndCoplanarPoint(V3(pl.n), V3(pl.origin));
+  var out = new CL_T.Vector3();
+  if (!ray.ray.intersectPlane(tp, out)) return null;
+  var d = out.sub(V3(pl.origin));
+  return point(d.dot(V3(pl.u)), d.dot(V3(pl.v)));
+}
+
+/* --------------------------------------------------------------------------
+ * 4. 3D 舞台上的草图呈现（网格 / 基准面片 / 各面草图线框 / 动态预览 / 标签）
+ * ------------------------------------------------------------------------ */
+function disposeGroup(g) {
+  if (!g) return;
+  g.traverse(function (o) { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); });
+  S.scene3.remove(g);
+}
+function lineObj(ptsWorld, color, opacity) {
+  var g = new CL_T.BufferGeometry().setFromPoints(ptsWorld);
+  var m = new CL_T.LineBasicMaterial({ color: color, transparent: opacity < 1, opacity: opacity });
+  return new CL_T.LineSegments(g, m);
+}
+/* 折线 → 成对端点（LineSegments 用） */
+function polySegs(pts, closedIt, pl, off) {
+  var out = [], n = pts.length;
+  if (n < 2) return out;
+  var last = closedIt ? n : n - 1;
+  for (var i = 0; i < last; i++) {
+    var a = pts[i], b = pts[(i + 1) % n];
+    out.push(toWorldOn(pl, a.x, a.y, off), toWorldOn(pl, b.x, b.y, off));
+  }
+  return out;
+}
+/* 全量重建：当前基准面网格+面片 + 各基准面草图线框 + 选中高亮 */
+function updateSketch3D() {
+  if (!S.scene3) return;
+  disposeGroup(S.gridGroup); S.gridGroup = null;
+  Object.keys(S.skGroups).forEach(function (k) { disposeGroup(S.skGroups[k]); });
+  S.skGroups = {};
+  if (S.grid) {
+    var grp = new CL_T.Group(), pl = plane();
+    var half = (S.cam3.top - S.cam3.bottom) / 2 / Math.max(0.05, S.cam3.zoom || 1);
+    var G = Math.max(50, Math.min(320, Math.ceil(half * 1.5 / 10) * 10));
+    var minor = [], major = [], i, a;
+    /* 网格/轴线画在基准面内侧（-n 方向），有实体时被表面自然遮挡，避免与面共面 z-fighting */
+    for (i = -G; i <= G + 0.01; i += 10) {
+      var arr = (Math.round(i / 50) * 50 === i) ? major : minor;
+      arr.push(toWorldOn(pl, i, -G, -0.35), toWorldOn(pl, i, G, -0.35));
+      arr.push(toWorldOn(pl, -G, i, -0.35), toWorldOn(pl, G, i, -0.35));
+    }
+    grp.add(lineObj(minor, 0xcfd9e6, 0.9));
+    grp.add(lineObj(major, 0xb9c7d8, 0.9));
+    grp.add(lineObj([toWorldOn(pl, -G, 0, -0.3), toWorldOn(pl, G, 0, -0.3)], 0xe27979, 1));   // U 轴
+    grp.add(lineObj([toWorldOn(pl, 0, -G, -0.3), toWorldOn(pl, 0, G, -0.3)], 0x54b995, 1));   // V 轴
+    /* 半透明基准面片：让“当前在哪个面上画”一目了然 */
+    var quad = new CL_T.Mesh(
+      new CL_T.PlaneGeometry(G * 2, G * 2),
+      new CL_T.MeshBasicMaterial({ color: pl.color, transparent: true, opacity: 0.10, side: CL_T.DoubleSide, depthWrite: false })
+    );
+    var qm = planeMatrixOn(pl);
+    qm.setPosition(V3(pl.origin).addScaledVector(V3(pl.n), -0.15));
+    quad.applyMatrix4(qm);
+    grp.add(quad);
+    var corner = [point(-G, -G), point(G, -G), point(G, G), point(-G, G)];
+    grp.add(lineObj(polySegs(corner, true, pl, -0.12), pl.color, 0.9));
+    S.scene3.add(grp);
+    S.gridGroup = grp;
+  }
+  /* 各基准面的草图线框（e.pl 归属） */
+  var byPlane = {};
+  S.entities.forEach(function (e) { (byPlane[e.pl] = byPlane[e.pl] || []).push(e); });
+  Object.keys(byPlane).forEach(function (pid) {
+    var pl = planeById(pid), g = new CL_T.Group();
+    var off = 0.08, segs = [], selSegs = [], selPts = [];
+    byPlane[pid].forEach(function (e) {
+      var tgt = e.sel ? selSegs : segs;
+      var ps = polySegs(e.pts, e.closed, pl, off);
+      for (var i = 0; i < ps.length; i += 2) { tgt.push(ps[i], ps[i + 1]); }
+      if (e.sel) e.pts.forEach(function (q) { selPts.push(toWorldOn(pl, q.x, q.y, off)); });
+    });
+    var isCur = pid === S.planeId;
+    if (segs.length) g.add(lineObj(segs, isCur ? 0x3d5a8c : 0x9fb2c8, isCur ? 1 : 0.55));
+    if (selSegs.length) g.add(lineObj(selSegs, 0x2f5fe0, 1));
+    if (selPts.length) {
+      var pg = new CL_T.BufferGeometry().setFromPoints(selPts);
+      g.add(new CL_T.Points(pg, new CL_T.PointsMaterial({ color: 0x2f5fe0, size: 6, sizeAttenuation: false })));
+    }
+    S.scene3.add(g);
+    S.skGroups[pid] = g;
+  });
+  refreshDyn();
+  updateLabels();
+}
+/* 动态预览：拉伸前的图形 / 剪切笔画 / 样条中途点 */
+function refreshDyn() {
+  if (!S.scene3) return;
+  disposeGroup(S.dynGroup); S.dynGroup = new CL_T.Group();
+  var pl = plane();
+  if (S.preview && S.preview.pts && S.preview.pts.length > 1) {
+    S.dynGroup.add(lineObj(polySegs(S.preview.pts, !!S.preview.closed, pl, 0.12), 0xe39743, 1));
+  }
+  if (S.splinePts.length > 1) {
+    S.dynGroup.add(lineObj(polySegs(S.splinePts, false, pl, 0.12), 0x7b5bd6, 1));
+  }
+  if (S.trimPts && S.trimPts.length > 1) {
+    S.dynGroup.add(lineObj(polySegs(S.trimPts, false, pl, 0.12), 0xe35d6a, 1));
+  }
+  S.scene3.add(S.dynGroup);
+}
+/* 尺寸标签：HTML 层，每帧按相机投影更新（任何视角都贴着实体） */
+function updateLabels() {
+  if (!S.dims || !S.cam3 || !S.active) { labelsEl.innerHTML = ""; return; }
+  var sel = selectedEntities();
+  if (sel.length !== 1) { labelsEl.innerHTML = ""; return; }
+  var e = sel[0], pl = planeById(e.pl), r = view.getBoundingClientRect();
+  var html = "";
+  dimFields(e).slice(0, 3).forEach(function (f, i) {
+    var q = e.pts[Math.min(e.pts.length - 1, i * 3)];
+    if (!q) return;
+    var w = toWorldOn(pl, q.x, q.y, 0.5).project(S.cam3);
+    if (w.z > 1) return;
+    var x = (w.x * 0.5 + 0.5) * r.width, y = (-w.y * 0.5 + 0.5) * r.height;
+    html += '<span class="cl-label" style="left:' + x.toFixed(1) + 'px;top:' + y.toFixed(1) + 'px">' +
+      esc(f[0]) + " " + (Math.round(f[2] * 100) / 100) + "</span>";
+  });
+  labelsEl.innerHTML = html;
+}
+
+/* --------------------------------------------------------------------------
+ * 5. 工具条
+ * ------------------------------------------------------------------------ */
+var ICONS = {
+  select: '<path d="M5 3 L5 16 L9 12 L12 18 L15 17 L12 11 L18 11 Z"/>',
+  line: '<path d="M4 17 L17 4"/><circle cx="4" cy="17" r="1.8"/><circle cx="17" cy="4" r="1.8"/>',
+  rect: '<rect x="4" y="5" width="13" height="11" rx="1"/>',
+  square: '<rect x="5" y="5" width="11" height="11" rx="1"/>',
+  circle: '<circle cx="10.5" cy="10.5" r="6.5"/>',
+  arc: '<path d="M4 16 A8 8 0 0 1 17 7"/><circle cx="4" cy="16" r="1.3"/><circle cx="17" cy="7" r="1.3"/>',
+  ellipse: '<ellipse cx="10.5" cy="10.5" rx="7.5" ry="4.5"/>',
+  spline: '<path d="M3 15 C6 3 12 18 18 6"/><circle cx="3" cy="15" r="1.3"/><circle cx="18" cy="6" r="1.3"/>',
+  slot: '<path d="M7 5 h7 a4 4 0 0 1 0 8 h-7 a4 4 0 0 1 0-8 Z"/>',
+  polygon: '<path d="M10 3 L17 8 L14.5 17 L5.5 17 L3 8 Z"/><circle cx="10" cy="10.5" r="4" stroke-dasharray="2 2"/>',
+  linear: '<path d="M3 6 h4 M3 10 h4 M3 14 h4 M10 10 h8"/><path d="M15 7 l3 3 -3 3"/>',
+  circular: '<circle cx="7" cy="10" r="3"/><circle cx="15" cy="10" r="3"/><path d="M9 4 A7 7 0 0 1 15 6"/>',
+  trim: '<path d="M4 16 L16 4 M16 16 L4 4"/><path d="M8 5 l3 3 M13 13 l3 3"/>',
+  face: '<path d="M4 14 L10 4 L17 8 L11 18 Z"/><path d="M4 14 L11 18 M10 4 L11 18" stroke-dasharray="2 2"/>'
+};
+var TOOL_NAME = {
+  select: "选择", line: "直线", rect: "矩形", square: "正方形", circle: "圆",
+  arc: "圆弧", ellipse: "椭圆", spline: "样条", slot: "槽", polygon: "多边形",
+  linear: "线阵列", circular: "圆周阵列", trim: "强劲剪切", face: "拾取面"
+};
+var TOOL_GROUPS = [
+  { key: "base", name: "选择", tools: ["select", "face", "trim"] },
+  { key: "draw", name: "绘图", tools: ["line", "rect", "square", "circle", "arc", "ellipse", "spline", "slot", "polygon"] },
+  { key: "array", name: "阵列", tools: ["linear", "circular"] }
+];
+function renderRail() {
+  rail.innerHTML = "";
+  TOOL_GROUPS.forEach(function (g) {
+    var grp = document.createElement("div");
+    grp.className = "cl-grp" + (S.grpOpen[g.key] ? "" : " closed");
+    var h = document.createElement("button");
+    h.className = "cl-grp-h";
+    h.innerHTML = "<span>" + g.name + "</span><i>▾</i>";
+    h.addEventListener("click", function () {
+      S.grpOpen[g.key] = !S.grpOpen[g.key];
+      grp.classList.toggle("closed", !S.grpOpen[g.key]);
+    });
+    grp.appendChild(h);
+    var box = document.createElement("div");
+    box.className = "cl-grp-tools";
+    g.tools.forEach(function (t) {
+      var drawing = t !== "select" && t !== "face";
+      var b = document.createElement("button");
+      b.className = "cl-tool" + (S.tool === t ? " on" : "") + (drawing && !S.sketchOn ? " off" : "");
+      b.setAttribute("data-tool", t);
+      b.innerHTML = '<svg viewBox="0 0 21 21">' + ICONS[t] + '</svg><span>' + TOOL_NAME[t] + "</span>";
+      box.appendChild(b);
+    });
+    grp.appendChild(box);
+    rail.appendChild(grp);
+  });
+}
+function setTool(t) {
+  var drawing = t !== "select" && t !== "face";
+  if (drawing && !S.sketchOn) { toast("草图已锁定 · 点底部「草图绘制」继续编辑"); return; }
+  S.tool = t; S.preview = null; S.arcStep = 0; S.arcData = null; S.splinePts = []; S.trimPts = null;
+  /* 绘图/剪切工具：单指/左键留给画笔（禁旋转），双指=旋转+缩放，随时可看 3D；
+     选择工具：单指/左键旋转视角，双指=缩放+平移 */
+  if (S.ctrl3) {
+    S.ctrl3.touches.ONE = (t === "select") ? CL_T.TOUCH.ROTATE : -1;
+    S.ctrl3.mouseButtons.LEFT = (t === "select") ? CL_T.MOUSE.ROTATE : -1;
+    S.ctrl3.touches.TWO = drawing ? CL_T.TOUCH.DOLLY_ROTATE : CL_T.TOUCH.DOLLY_PAN;
+  }
+  renderRail(); refreshDyn();
+  if (t === "linear" || t === "circular") {
+    S.inspOpen = true; syncInsp();
+    if (!selectedEntities().length) toast("先点选要阵列的草图实体");
+    else toast("已选中 " + selectedEntities().length + " 个实体 · 右侧设置阵列");
+  } else if (t === "trim") toast("按住拖过线段：自动剪到最近交点");
+  else if (t === "face") toast("点一下模型的表面 → 生成该面的基准面并开始画草图");
+  else if (t !== "select") toast("单指画图 · 双指缩放/平移 · 底部「正视基准面」回正视角");
+}
+
+/* --------------------------------------------------------------------------
+ * 6. 草图绘制交互（全部经由射线投到当前基准面）
+ * ------------------------------------------------------------------------ */
+function cancelDraw() {
+  S.preview = null; S.drag = null; S.trimPts = null; S.splinePts = []; S.tap = null;
+  S.arcStep = 0; S.arcData = null;
+  refreshDyn();
+}
+function previewFrom(kind, p0, p1) {
+  var dx = p1.x - p0.x, dy = p1.y - p0.y;
+  if (kind === "line") return newEntity("line", { ax: p0.x, ay: p0.y, bx: p1.x, by: p1.y });
+  if (kind === "rect") return newEntity("rect", { x0: Math.min(p0.x, p1.x), y0: Math.min(p0.y, p1.y), x1: Math.max(p0.x, p1.x), y1: Math.max(p0.y, p1.y) });
+  if (kind === "square") return newEntity("square", { cx: (p0.x + p1.x) / 2, cy: (p0.y + p1.y) / 2, size: Math.max(Math.abs(dx), Math.abs(dy)), rot: 0 });
+  if (kind === "circle") return newEntity("circle", { cx: p0.x, cy: p0.y, r: Math.max(0.1, dist(p0, p1)) });
+  if (kind === "ellipse") return newEntity("ellipse", { cx: p0.x, cy: p0.y, rx: Math.max(0.1, Math.abs(dx)), ry: Math.max(0.1, Math.abs(dy)), rot: 0 });
+  if (kind === "slot") return newEntity("slot", { cx: (p0.x + p1.x) / 2, cy: (p0.y + p1.y) / 2, len: Math.max(0.1, Math.abs(dx)), r: Math.max(0.1, Math.abs(dy) / 2), rot: 0 });
+  if (kind === "polygon") return newEntity("polygon", { cx: p0.x, cy: p0.y, r: Math.max(0.1, dist(p0, p1)), n: 6, rot: 0 });
+  return null;
+}
+function onDown(ev) {
+  try { view.setPointerCapture && view.setPointerCapture(ev.pointerId); } catch (e) { }
+  var s = pointerXY(ev);
+  S.pointers[ev.pointerId] = s;
+  if (Object.keys(S.pointers).length === 2) { cancelDraw(); return; }   // 双指 → 交给 OrbitControls
+  ball.classList.add("on"); ball.style.left = s.x + "px"; ball.style.top = s.y + "px";
+  var p = raySketch(ev);
+  if (!p) return;
+  if (S.tool === "select") {
+    var hit = hitEntity(p);
+    if (hit) {
+      S.entities.forEach(function (e) { e.sel = (e.id === hit.id); });
+      if (S.sketchOn) {
+        S.drag = { e: hit, last: p };
+        if (S.ctrl3) S.ctrl3.enabled = false;   // 拖实体期间不许转视角
+      }
+      refreshAll();
+      return;
+    }
+    /* 轻点候选：拖动=旋转视角（交给 OrbitControls），只有没挪动的轻点才拾取棱边/面 */
+    S.tap = { x: ev.clientX, y: ev.clientY, moved: false };
+    return;
+  }
+  if (S.tool === "face") {
+    var fh2 = pickFaceAt(ev.clientX, ev.clientY);
+    if (fh2) addFacePlane(fh2);
+    else toast("没点到模型表面 · 请点实体上的平面");
+    return;
+  }
+  if (S.tool === "arc") {
+    if (!S.arcData) { S.arcData = { c: p }; S.arcStep = 1; toast("再点一下确定圆弧起点"); }
+    else if (S.arcStep === 1) {
+      S.arcData.a0 = Math.atan2(p.y - S.arcData.c.y, p.x - S.arcData.c.x);
+      S.arcData.r = dist(p, S.arcData.c); S.arcStep = 2; toast("点第三下确定圆弧终点");
+    } else {
+      var a1 = Math.atan2(p.y - S.arcData.c.y, p.x - S.arcData.c.x);
+      var sweep = a1 - S.arcData.a0;
+      while (sweep <= -Math.PI) sweep += Math.PI * 2;
+      while (sweep > Math.PI) sweep -= Math.PI * 2;
+      if (Math.abs(sweep) > 0.02) addEntity("arc", { cx: S.arcData.c.x, cy: S.arcData.c.y, r: S.arcData.r, a0: S.arcData.a0, a1: S.arcData.a0 + sweep });
+      S.arcData = null; S.arcStep = 0;
+    }
+    return;
+  }
+  if (S.tool === "spline") { S.splinePts.push(p); refreshDyn(); return; }
+  if (S.tool === "trim") { S.trimPts = [p]; if (S.ctrl3) S.ctrl3.enabled = false; return; }
+  S.drag = { start: p };
+  S.preview = previewFrom(S.tool, p, p);
+  refreshDyn();
+}
+function onMove(ev) {
+  var s = pointerXY(ev);
+  if (S.pointers[ev.pointerId]) S.pointers[ev.pointerId] = s;
+  ball.style.left = s.x + "px"; ball.style.top = s.y + "px";
+  if (Object.keys(S.pointers).length >= 2) return;      // 双指手势期间不画
+  if (S.tap) {
+    var tt = pointerXY(ev);
+    if (Math.hypot(tt.x - pointerXY({ clientX: S.tap.x, clientY: S.tap.y }).x, tt.y - pointerXY({ clientX: S.tap.x, clientY: S.tap.y }).y) > 8) S.tap = null;
+  }
+  var p = raySketch(ev);
+  if (!p) return;
+  coordEl.textContent = "U " + p.x.toFixed(2) + "   V " + p.y.toFixed(2);
+  if (S.drag && S.drag.start) {
+    S.preview = previewFrom(S.tool, S.drag.start, p); refreshDyn();
+  } else if (S.drag && S.drag.e) {
+    var e = S.drag.e, dx = p.x - S.drag.last.x, dy = p.y - S.drag.last.y, d = e.def;
+    if (d.ax !== undefined) { d.ax += dx; d.ay += dy; d.bx += dx; d.by += dy; }
+    else if (d.x0 !== undefined) { d.x0 += dx; d.x1 += dx; d.y0 += dy; d.y1 += dy; }
+    else if (d.cx !== undefined) { d.cx += dx; d.cy += dy; }
+    else if (d.pts) d.pts.forEach(function (q) { q.x += dx; q.y += dy; });
+    S.drag.last = p; resample(e); updateSketch3D();
+  } else if (S.trimPts) {
+    S.trimPts.push(p); refreshDyn();
+  }
+}
+function tapPick(ev) {
+  var eg = pickEdgeAt(ev.clientX, ev.clientY);
+  if (eg) {
+    S.pickedEdge = eg;
+    clearEdgeHighlight();
+    var g = new CL_T.BufferGeometry().setFromPoints([eg.a, eg.b]);
+    S.hilite = new CL_T.LineSegments(g, new CL_T.LineBasicMaterial({ color: 0xe35d6a }));
+    S.scene3.add(S.hilite);
+    toast("已选中棱边 · 右侧「实体后处理」可设圆角 R");
+    return true;
+  }
+  var fh = pickFaceAt(ev.clientX, ev.clientY);
+  if (fh) { addFacePlane(fh); return true; }
+  return false;
+}
+function onUp(ev) {
+  delete S.pointers[ev.pointerId];
+  if (S.ctrl3) S.ctrl3.enabled = true;
+  if (S.tap && !S.drag) { tapPick(ev); S.tap = null; return; }
+  S.tap = null;
+  if (S.drag && S.drag.start) {
+    var pr = S.preview;
+    if (pr && pr.pts && pr.pts.length > 1) {
+      var span = 0;
+      for (var i = 0; i < pr.pts.length; i++) span += dist(pr.pts[i], pr.pts[(i + 1) % pr.pts.length]);
+      if (span > 1) addEntity(pr.kind, pr.def);
+    }
+    S.preview = null; S.drag = null; refreshDyn();
+    setTool("select"); toast("已切到选择工具 · 单指旋转视角");
+  } else if (S.drag && S.drag.e) {
+    S.drag = null; snapshot(); markDirty(); renderInspector();
+  } else if (S.trimPts) {
+    var path = S.trimPts; S.trimPts = null; applyTrim(path);
+  }
+}
+
+/* --------------------------------------------------------------------------
+ * 7. 强劲剪切
+ * ------------------------------------------------------------------------ */
+function segCross(a, b, c, d) {
+  var r = point(b.x - a.x, b.y - a.y), s = point(d.x - c.x, d.y - c.y);
+  var den = r.x * s.y - r.y * s.x;
+  if (Math.abs(den) < 1e-9) return null;
+  var t = ((c.x - a.x) * s.y - (c.y - a.y) * s.x) / den;
+  var u = ((c.x - a.x) * r.y - (c.y - a.y) * r.x) / den;
+  if (t < -0.001 || t > 1.001 || u < -0.001 || u > 1.001) return null;
+  return { t: Math.max(0, Math.min(1, t)) };
+}
+function applyTrim(path) {
+  if (!path || path.length < 2) return;
+  var tol = pickTol() * 0.9;
+  var cur = S.entities.filter(function (e) { return e.pl === S.planeId; });
+  if (!cur.length) { toast("当前基准面没有可剪切的草图"); return; }
+  snapshot();
+  var segs = [], i, j;
+  cur.forEach(function (e) {
+    var ps = e.pts.slice();
+    if (e.closed && ps.length > 2) ps.push(ps[0]);
+    for (i = 0; i < ps.length - 1; i++) segs.push({ a: ps[i], b: ps[i + 1], owner: e.id, idx: i });
+  });
+  var cuts = [];
+  for (i = 0; i < segs.length; i++) {
+    for (j = i + 1; j < segs.length; j++) {
+      if (segs[i].owner === segs[j].owner && Math.abs(segs[i].idx - segs[j].idx) <= 1) continue;
+      var x = segCross(segs[i].a, segs[i].b, segs[j].a, segs[j].b);
+      if (x) { cuts.push({ seg: i, t: x.t }); cuts.push({ seg: j, t: x.t }); }
+    }
+    for (j = 0; j < path.length - 1; j++) {
+      var y = segCross(segs[i].a, segs[i].b, path[j], path[j + 1]);
+      if (y) cuts.push({ seg: i, t: y.t });
+    }
+  }
+  var bySeg = {};
+  cuts.forEach(function (c) { (bySeg[c.seg] = bySeg[c.seg] || []).push(c.t); });
+  var kept = [];
+  segs.forEach(function (sg, si) {
+    var ts = [0, 1].concat((bySeg[si] || []));
+    ts.sort(function (a, b) { return a - b; });
+    var uniq = [];
+    ts.forEach(function (t) { if (!uniq.length || Math.abs(t - uniq[uniq.length - 1]) > 1e-4) uniq.push(t); });
+    for (var k = 0; k < uniq.length - 1; k++) {
+      var t0 = uniq[k], t1 = uniq[k + 1], tm = (t0 + t1) / 2;
+      var mid = point(sg.a.x + (sg.b.x - sg.a.x) * tm, sg.a.y + (sg.b.y - sg.a.y) * tm);
+      var dmin = 1e9;
+      for (var q = 0; q < path.length - 1; q++) dmin = Math.min(dmin, segDist(mid, path[q], path[q + 1]));
+      if (dmin < tol) continue;
+      var ne = newEntity("poly", { pts: [
+        point(sg.a.x + (sg.b.x - sg.a.x) * t0, sg.a.y + (sg.b.y - sg.a.y) * t0),
+        point(sg.a.x + (sg.b.x - sg.a.x) * t1, sg.a.y + (sg.b.y - sg.a.y) * t1)
+      ], closed: false });
+      kept.push(ne);
+    }
+  });
+  S.entities = S.entities.filter(function (e) { return e.pl !== S.planeId; }).concat(kept);
+  refreshAll(); markDirty();
+  toast("已剪切 · 当前基准面剩余 " + kept.length + " 段 · 特征已联动重建");
+}
+
+/* --------------------------------------------------------------------------
+ * 8. 阵列
+ * ------------------------------------------------------------------------ */
+function transformDef(d, fn, ang) {
+  if (d.ax !== undefined) { var a = fn(point(d.ax, d.ay)), b = fn(point(d.bx, d.by)); d.ax = a.x; d.ay = a.y; d.bx = b.x; d.by = b.y; }
+  if (d.x0 !== undefined) { var ps = [point(d.x0, d.y0), point(d.x1, d.y0), point(d.x1, d.y1), point(d.x0, d.y1)].map(fn);
+    d.x0 = Math.min.apply(null, ps.map(function (p) { return p.x; })); d.x1 = Math.max.apply(null, ps.map(function (p) { return p.x; }));
+    d.y0 = Math.min.apply(null, ps.map(function (p) { return p.y; })); d.y1 = Math.max.apply(null, ps.map(function (p) { return p.y; })); }
+  if (d.cx !== undefined) { var c = fn(point(d.cx, d.cy)); d.cx = c.x; d.cy = c.y; }
+  if (d.rot !== undefined && ang) d.rot = (d.rot || 0) + ang;
+  if (d.a0 !== undefined && ang) { d.a0 += ang; d.a1 += ang; }
+  if (d.pts) d.pts = d.pts.map(fn);
+}
+function applyPattern(kind, cfg) {
+  var src = selectedEntities().filter(function (e) { return e.pl === S.planeId; });
+  var n = Math.max(2, Math.min(40, cfg.count | 0)), i;
+  if (!src.length) { toast("请先选择当前基准面上的草图实体"); return; }
+  snapshot();
+  for (i = 1; i < n; i++) {
+    src.forEach(function (e) {
+      var cp = newEntity(e.kind, copyObj(e.def));
+      cp.closed = e.closed;
+      if (kind === "linear") transformDef(cp.def, function (p) { return point(p.x + cfg.dx * i, p.y + cfg.dy * i); }, 0);
+      else transformDef(cp.def, function (p) { return rotPt(p, point(cfg.cx, cfg.cy), cfg.angle * Math.PI / 180 * i); }, cfg.angle * Math.PI / 180 * i);
+      resample(cp); S.entities.push(cp);
+    });
+  }
+  refreshAll();
+  toast("已生成 " + (n * src.length) + " 个实体（" + (kind === "linear" ? "线性" : "圆周") + "阵列）");
+}
+
+/* --------------------------------------------------------------------------
+ * 9. 几何：2D 轮廓 → CSG 实体
+ * ------------------------------------------------------------------------ */
+function geomToCSG(g0) {
+  var g = g0.index ? g0.toNonIndexed() : g0, pos = g.getAttribute("position");
+  var polys = [], V = CL_CSG.Vector, Vert = CL_CSG.Vertex, Poly = CL_CSG.Polygon;
+  for (var i = 0; i < pos.count; i += 3) {
+    var a = { x: pos.getX(i), y: pos.getY(i), z: pos.getZ(i) };
+    var b = { x: pos.getX(i + 1), y: pos.getY(i + 1), z: pos.getZ(i + 1) };
+    var c = { x: pos.getX(i + 2), y: pos.getY(i + 2), z: pos.getZ(i + 2) };
+    var ux = b.x - a.x, uy = b.y - a.y, uz = b.z - a.z;
+    var vx = c.x - a.x, vy = c.y - a.y, vz = c.z - a.z;
+    var nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    var len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+    if (len < 1e-9) continue;
+    nx /= len; ny /= len; nz /= len;
+    polys.push(new Poly([
+      new Vert(new V(a), new V({ x: nx, y: ny, z: nz })),
+      new Vert(new V(b), new V({ x: nx, y: ny, z: nz })),
+      new Vert(new V(c), new V({ x: nx, y: ny, z: nz }))
+    ]));
+  }
+  return CL_CSG.fromPolygons(polys);
+}
+function csgGeom(csg) {
+  var ps = csg.toPolygons(), out = [], i, k;
+  for (i = 0; i < ps.length; i++) {
+    var v = ps[i].vertices;
+    for (k = 1; k < v.length - 1; k++) {
+      var a = v[0].pos, b = v[k].pos, c = v[k + 1].pos;
+      out.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
+    }
+  }
+  var g = new CL_T.BufferGeometry();
+  g.setAttribute("position", new CL_T.Float32BufferAttribute(out, 3));
+  g.computeVertexNormals(); g.computeBoundingBox(); g.computeBoundingSphere();
+  g.userData.tris = out.length / 9;
+  return g;
+}
+function polyArea(p) {
+  var a = 0;
+  for (var i = 0; i < p.length; i++) { var q = p[(i + 1) % p.length]; a += p[i].x * q.y - q.x * p[i].y; }
+  return Math.abs(a) / 2;
+}
+/* 轮廓提取：只看指定基准面的草图（换基准面后别的面的矩形不会再被拉伸） */
+function collectSketch(useSelected, plId) {
+  return S.entities.filter(function (e) { return e.pl === plId && (!useSelected || e.sel); });
+}
+function loopsFromList(list) {
+  var loops = [], i;
+  var closed = list.filter(function (e) { return e.closed && e.pts && e.pts.length >= 3; });
+  var open = list.filter(function (e) { return !e.closed && e.pts && e.pts.length >= 2; });
+  closed.forEach(function (e) { loops.push({ pts: e.pts.slice(), ids: [e.id], area: polyArea(e.pts) }); });
+  var pool = open.slice(), guard = 0;
+  while (pool.length && guard++ < 200) {
+    var chain = pool.splice(0, 1)[0], pts = chain.pts.slice(), ids = [chain.id], grew = true;
+    while (grew && pool.length) {
+      grew = false;
+      for (i = 0; i < pool.length; i++) {
+        var q = pool[i];
+        if (dist(pts[pts.length - 1], q.pts[0]) < 0.4) { pts = pts.concat(q.pts.slice(1)); ids.push(q.id); pool.splice(i, 1); grew = true; break; }
+        if (dist(pts[pts.length - 1], q.pts[q.pts.length - 1]) < 0.4) { pts = pts.concat(q.pts.slice(0, -1).reverse()); ids.push(q.id); pool.splice(i, 1); grew = true; break; }
+      }
+    }
+    if (pts.length >= 3 && dist(pts[0], pts[pts.length - 1]) < 0.4) { pts.pop(); loops.push({ pts: pts, ids: ids, area: polyArea(pts) }); }
+  }
+  loops = loops.filter(function (l) { return l.pts.length >= 3 && l.area > 0.01; });
+  loops.sort(function (a, b) { return b.area - a.area; });
+  loops.forEach(function (l) { l.holes = []; });
+  for (i = 0; i < loops.length; i++) {
+    for (var j = 0; j < i; j++) {
+      if (loops[i].area < loops[j].area * 0.999 && pointInPoly(loops[i].pts[0], loops[j].pts)) {
+        loops[j].holes.push(loops[i]); loops[i].isHole = true; break;
+      }
+    }
+  }
+  return loops.filter(function (l) { return !l.isHole; });
+}
+function loopsFromSketch(useSelected) { return loopsFromList(collectSketch(useSelected, S.planeId)); }
+function shapeFromLoop(l) {
+  var sh = new CL_T.Shape(l.pts.map(function (p) { return new CL_T.Vector2(p.x, p.y); }));
+  l.holes.forEach(function (h) {
+    sh.holes.push(new CL_T.Path(h.pts.map(function (p) { return new CL_T.Vector2(p.x, p.y); })));
+  });
+  return sh;
+}
+/* 拉伸一组轮廓到指定基准面坐标里。forCut：刀具多伸 1mm 越过表面，避免与面共面产生碎面 */
+function extrudeLoops(loops, pl, p, forCut) {
+  var out = null;
+  var z0 = p.dir >= 0 ? p.start : -p.end;
+  var z1 = p.dir >= 0 ? p.end : -p.start;
+  if (z1 - z0 < 0.01) return null;
+  if (forCut) z1 += 1;
+  loops.forEach(function (l) {
+    var g = new CL_T.ExtrudeGeometry(shapeFromLoop(l), { depth: z1 - z0, bevelEnabled: false, curveSegments: 8, steps: 1 });
+    g.translate(0, 0, z0); g.applyMatrix4(planeMatrixOn(pl));
+    var c = geomToCSG(g); g.dispose();
+    out = out ? out.union(c) : c;
+  });
+  return out;
+}
+/* 旋转一组轮廓（axis/ac 是该基准面 2D 坐标里的轴向与轴上一点） */
+function revolveLoops(loops, pl, ax, ac, angleDeg) {
+  var axis = ax, center = ac;
+  var radial = point(-axis.y, axis.x);
+  var ang = Math.max(1, Math.min(360, angleDeg)) * Math.PI / 180;
+  var steps = Math.max(8, Math.round(48 * ang / (Math.PI * 2)));
+  var origin = V3(pl.origin), au = V3(pl.u), av = V3(pl.v), an = V3(pl.n);
+  var auv = au.clone().multiplyScalar(axis.x).add(av.clone().multiplyScalar(axis.y));
+  var ruv = au.clone().multiplyScalar(radial.x).add(av.clone().multiplyScalar(radial.y));
+  var world = function (t, r, th) {
+    return origin.clone().add(auv.clone().multiplyScalar(t))
+      .add(ruv.clone().multiplyScalar(r * Math.cos(th)))
+      .add(an.clone().multiplyScalar(r * Math.sin(th)));
+  };
+  var P = [], i, j;
+  loops.forEach(function (l) {
+    var local = l.pts.map(function (p) {
+      var q = point(p.x - center.x, p.y - center.y);
+      return { t: q.x * axis.x + q.y * axis.y, r: q.x * radial.x + q.y * radial.y };
+    });
+    for (i = 0; i < local.length; i++) {
+      var a = local[i], b = local[(i + 1) % local.length];
+      for (j = 0; j < steps; j++) {
+        var t0 = ang * j / steps, t1 = ang * (j + 1) / steps;
+        P.push(mkPoly([
+          world(a.t, a.r, t0), world(a.t, a.r, t1),
+          world(b.t, b.r, t1), world(b.t, b.r, t0)
+        ]));
+      }
+    }
+    if (ang < Math.PI * 1.999) {
+      var face0 = local.map(function (q) { return world(q.t, q.r, 0); }).reverse();
+      var face1 = local.map(function (q) { return world(q.t, q.r, ang); });
+      if (face0.length >= 3) P.push(mkPoly(face0));
+      if (face1.length >= 3) P.push(mkPoly(face1));
+    }
+  });
+  return P.length ? CL_CSG.fromPolygons(P) : null;
+}
+function mkPoly(points) {
+  var V = CL_CSG.Vector, Vs = points.map(function (p) { return new V({ x: p.x, y: p.y, z: p.z }); });
+  var a = Vs[1].minus(Vs[0]), b = Vs[2].minus(Vs[0]), n = a.cross(b).unit();
+  return new CL_CSG.Polygon(points.map(function (p) { return new CL_CSG.Vertex(new V({ x: p.x, y: p.y, z: p.z }), n); }));
+}
+
+/* --------------------------------------------------------------------------
+ * 9.5 特征列表与联动重建：草图改 → markDirty → 按序重建全部特征
+ * ------------------------------------------------------------------------ */
+function snapEntities(list) {
+  return list.map(function (e) { return { kind: e.kind, def: copyObj(e.def), closed: e.closed, pts: copyObj(e.pts), pl: e.pl }; });
+}
+/* 收集特征引用的草图：id 还在就用实时几何（联动），没了就用快照兜底 */
+function featureSketchList(ft) {
+  return ft.ids.map(function (id, k) {
+    for (var i = 0; i < S.entities.length; i++) {
+      if (S.entities[i].id === id && S.entities[i].pl === ft.pl.id) return S.entities[i];
+    }
+    return ft.snap[k];
+  });
+}
+function rebuildFeatures() {
+  var solid = null, stale = 0;
+  S.features.forEach(function (ft) {
+    try {
+      if (ft.t === "ext" || ft.t === "rev") {
+        var list = featureSketchList(ft);
+        ft.ids.forEach(function (id, k) {
+          var live = list[k];
+          if (!live || !live.id || live.id !== id) stale++;
+        });
+        var loops = loopsFromList(list);
+        if (!loops.length) return;
+        var c = null;
+        if (ft.t === "ext") c = extrudeLoops(loops, ft.pl, ft.p, ft.bool === "cut");
+        else c = revolveLoops(loops, ft.pl, ft.p.ax, ft.p.ac, ft.p.angle);
+        if (!c) return;
+        /* bug2：布尔语义改为「自动」—— 无实体新建、有实体合并；
+           只有明确「切除」才相减。旧值 'new' 兼容为自动。 */
+        if (!solid) solid = c;
+        else if (ft.bool === "cut") solid = solid.subtract(c);
+        else solid = solid.union(c);
+      } else if (ft.t === "hole") {
+        if (solid) solid = solid.subtract(holeCSGOn(ft.pl, ft.cfg));
+      } else if (ft.t === "fillet") {
+        if (solid) {
+          var cut = filletCutter(solid, { a: V3(ft.seg.a), b: V3(ft.seg.b) }, ft.radius);
+          if (cut) solid = solid.subtract(cut);
+        }
+      }
+    } catch (e) { /* 单个特征失败不拖垮整个模型 */ }
+  });
+  if (stale > 0) toast(stale + " 个特征用的草图已被改动/删除 · 暂按快照形状");
+  S.solid = solid;
+  rebuild3D();
+}
+function markDirty() {
+  clearTimeout(S.rebuildTimer);
+  S.rebuildTimer = setTimeout(function () { if (S.active) rebuildFeatures(); }, 60);
+}
+/* 特征轮廓：选中之优先 —— 刚画完的实体是自动选中的，
+   这样「矩形里再画个圆再拉伸」只会拉伸圆（凸台），而不是把外矩形当成带孔板；
+   什么都没选才用当前基准面全部草图（嵌套环按孔处理）。 */
+function featureProfileList() {
+  var sel = selectedEntities().filter(function (e) { return e.pl === S.planeId; });
+  if (sel.length) return sel;
+  return collectSketch(false, S.planeId);
+}
+function featureExtrude(mode) {
+  var list = S.feature.partial ? collectSketch(true, S.planeId) : featureProfileList();
+  if (!list.length) { toast("当前基准面没有可" + (mode === "cut" ? "切除" : "拉伸") + "的封闭轮廓"); return; }
+  /* 在拾取的模型面上切除时，法向朝外，材料在 -n 侧：自动反向 */
+  if (mode === "cut" && plane().type === "face" && S.feature.dir > 0) {
+    S.feature.dir = -1;
+    toast("切除已自动反向（朝材料内部）");
+  }
+  var bool = mode === "cut" ? "cut" : "auto";
+  var ft = { t: "ext", bool: bool, pl: copyObj(plane()),
+    ids: list.map(function (e) { return e.id; }), snap: snapEntities(list),
+    p: { start: S.feature.start, end: S.feature.end, dir: S.feature.dir } };
+  var had = !!S.solid;
+  S.features.push(ft);
+  rebuildFeatures();
+  toast(mode === "cut" ? "切除完成 · 随草图联动"
+    : (had ? "已合并进现有实体 · 与材料重叠时无可见变化（可调起点/终点凸出）"
+           : "拉伸成实体 · 随草图联动"));
+}
+function featureRevolve() {
+  var list = S.feature.partial ? collectSketch(true, S.planeId) : featureProfileList();
+  if (!list.length) { toast("当前基准面没有可旋转的封闭轮廓"); return; }
+  var ax, ac;
+  if (S.feature.axis === "v") { ax = point(0, 1); ac = point(0, 0); }
+  else if (S.feature.axis === "u") { ax = point(1, 0); ac = point(0, 0); }
+  else {
+    var line = selectedEntities().filter(function (e) { return e.kind === "line" && e.pl === S.planeId; })[0];
+    if (!line) { toast("请先选中当前基准面上的一条直线作为旋转轴"); return; }
+    var d = line.def, L = dist(point(d.ax, d.ay), point(d.bx, d.by)) || 1;
+    ax = point((d.bx - d.ax) / L, (d.by - d.ay) / L); ac = point(d.ax, d.ay);
+  }
+  var ft = { t: "rev", bool: S.feature.bool === "cut" ? "cut" : "auto", pl: copyObj(plane()),
+    ids: list.map(function (e) { return e.id; }), snap: snapEntities(list),
+    p: { angle: S.feature.angle, ax: ax, ac: ac } };
+  S.features.push(ft);
+  rebuildFeatures();
+  toast("旋转完成 · 随草图联动");
+}
+
+
+/* --------------------------------------------------------------------------
+ * 10. 圆角 / 打孔
+ * ------------------------------------------------------------------------ */
+function edgeSegments() {
+  if (!S.mesh || !S.mesh.geometry) return [];
+  var eg = new CL_T.EdgesGeometry(S.mesh.geometry, 24), a = eg.getAttribute("position"), out = [];
+  for (var i = 0; i < a.count; i += 2) {
+    out.push({
+      a: new CL_T.Vector3(a.getX(i), a.getY(i), a.getZ(i)),
+      b: new CL_T.Vector3(a.getX(i + 1), a.getY(i + 1), a.getZ(i + 1))
+    });
+  }
+  eg.dispose(); return out;
+}
+function pickEdgeAt(clientX, clientY) {
+  if (!S.r3 || !S.edges) return null;
+  var r = view.getBoundingClientRect();
+  var mouse = new CL_T.Vector2(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1);
+  var ray = new CL_T.Raycaster();
+  ray.params.Line = { threshold: pickTol() * 1.4 };
+  ray.setFromCamera(mouse, S.cam3);
+  var hits = ray.intersectObject(S.edges, false);
+  if (!hits.length) return null;
+  var hitP = hits[0].point;
+  var segs = edgeSegments(), best = null, bd = 1e9;
+  segs.forEach(function (sg) {
+    var mid = sg.a.clone().add(sg.b).multiplyScalar(0.5);
+    var dm = mid.distanceTo(hitP);
+    if (dm < bd) { bd = dm; best = sg; }
+  });
+  return best;
+}
+function pickFaceAt(clientX, clientY) {
+  if (!S.mesh) return null;
+  var r = view.getBoundingClientRect();
+  var mouse = new CL_T.Vector2(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1);
+  var ray = new CL_T.Raycaster();
+  ray.setFromCamera(mouse, S.cam3);
+  var hits = ray.intersectObject(S.mesh, false);
+  return hits.length ? hits[0] : null;
+}
+function clearEdgeHighlight() {
+  if (S.hilite) { S.scene3.remove(S.hilite); S.hilite.geometry.dispose(); S.hilite = null; }
+}
+/* 从 CSG 多边形里找某条棱两侧的面法向（圆角切除体要用） */
+function segDist3(p, a, b) {
+  var abx = b.x - a.x, aby = b.y - a.y, abz = b.z - a.z;
+  var apx = p.x - a.x, apy = p.y - a.y, apz = p.z - a.z;
+  var l2 = abx * abx + aby * aby + abz * abz;
+  if (l2 < 1e-12) return Math.sqrt(apx * apx + apy * apy + apz * apz);
+  var t = Math.max(0, Math.min(1, (apx * abx + apy * aby + apz * abz) / l2));
+  var dx = apx - t * abx, dy = apy - t * aby, dz = apz - t * abz;
+  return Math.sqrt(dx * dx + dy * dy + dz * dz);
+}
+function faceNormalsNearCsg(csg, seg) {
+  var pa = seg.a, pb = seg.b, t = pb.clone().sub(pa).normalize();
+  var normals = [];
+  csg.toPolygons().forEach(function (pg) {
+    var near = pg.vertices.some(function (v) { return segDist3(v.pos, pa, pb) < 1.4; });
+    if (!near) return;
+    var n = new CL_T.Vector3(pg.plane.normal.x, pg.plane.normal.y, pg.plane.normal.z);
+    n.addScaledVector(t, -n.dot(t));
+    if (n.lengthSq() < 0.05) return;
+    n.normalize();
+    if (!normals.some(function (u) { return u.dot(n) > 0.96; })) normals.push(n);
+  });
+  return normals;
+}
+/* 圆角切除体：方角 − 四分之一圆，沿棱边扫掠 */
+function filletCutter(csg, seg, radius) {
+  var t = seg.b.clone().sub(seg.a), len = t.length();
+  if (len < 0.01) return null;
+  t.normalize();
+  var norms = faceNormalsNearCsg(csg, seg);
+  if (norms.length < 2) return null;
+  var n1 = norms[0].clone(), n2 = norms[1].clone();
+  var d = n1.dot(n2);
+  if (d > 0.98 || d < -0.98) return null;
+  var x = n1.negate();
+  var y = n2.negate();
+  if (x.clone().cross(y).dot(t) < 0) y.negate();
+  var r = Math.max(0.2, Math.min(20, radius));
+  var shape = new CL_T.Shape();
+  shape.moveTo(0, 0); shape.lineTo(r, 0);
+  for (var i = 0; i <= 16; i++) {
+    var a = -Math.PI / 2 - Math.PI / 2 * i / 16;
+    shape.lineTo(r + r * Math.cos(a), r + r * Math.sin(a));
+  }
+  shape.lineTo(0, r); shape.closePath();
+  var g = new CL_T.ExtrudeGeometry(shape, { depth: len + 2 * r, bevelEnabled: false, curveSegments: 8 });
+  g.translate(0, 0, -r);
+  var m = new CL_T.Matrix4().makeBasis(x, y, t);
+  m.setPosition(seg.a.clone().addScaledVector(t, -r));
+  g.applyMatrix4(m);
+  var c = geomToCSG(g); g.dispose();
+  return c;
+}
+function fillet(radius) {
+  if (!S.solid || !S.pickedEdge) { toast("请先用「选择」工具点一条棱边"); return; }
+  var r = Math.max(0.2, Math.min(20, num(radius, 2)));
+  var seg = { a: [S.pickedEdge.a.x, S.pickedEdge.a.y, S.pickedEdge.a.z], b: [S.pickedEdge.b.x, S.pickedEdge.b.y, S.pickedEdge.b.z] };
+  if (!filletCutter(S.solid, { a: V3(seg.a), b: V3(seg.b) }, r)) {
+    toast("该棱边无法识别相邻两面（可换一条直棱）");
+    return;
+  }
+  S.features.push({ t: "fillet", radius: r, seg: seg });
+  S.pickedEdge = null; clearEdgeHighlight();
+  rebuildFeatures();
+  toast("已生成 R" + r + " 圆角 · 随草图联动");
+}
+function holeCSGOn(pl, cfg) {
+  var start = toWorldOn(pl, cfg.x, cfg.y, -cfg.depth - 1);
+  var end = toWorldOn(pl, cfg.x, cfg.y, 2);
+  var r = Math.max(0.2, cfg.d / 2);
+  var c = CL_CSG.cylinder({ start: [start.x, start.y, start.z], end: [end.x, end.y, end.z], radius: r, slices: 32 });
+  if (cfg.type === "counterbore" && cfg.cbD > cfg.d) {
+    var s2 = toWorldOn(pl, cfg.x, cfg.y, -cfg.cbDepth), e2 = toWorldOn(pl, cfg.x, cfg.y, 2);
+    c = c.union(CL_CSG.cylinder({ start: [s2.x, s2.y, s2.z], end: [e2.x, e2.y, e2.z], radius: cfg.cbD / 2, slices: 32 }));
+  } else if (cfg.type === "countersink" && cfg.csAngle > 5 && cfg.csAngle < 179) {
+    var h = (cfg.cbD - cfg.d) / 2 / Math.tan(cfg.csAngle * Math.PI / 360);
+    if (h > 0.1) {
+      var cone = new CL_T.CylinderGeometry(cfg.cbD / 2, r, h, 32, 1, false);
+      cone.rotateX(Math.PI / 2);
+      cone.translate(0, 0, -h / 2);
+      var m = planeMatrixOn(pl);
+      m.setPosition(toWorldOn(pl, cfg.x, cfg.y, 0));
+      cone.applyMatrix4(m);
+      c = c.union(geomToCSG(cone)); cone.dispose();
+    }
+  }
+  return c;
+}
+function drillHole(cfg) {
+  if (!S.solid) { toast("请先生成一个实体"); return; }
+  S.features.push({ t: "hole", cfg: copyObj(cfg), pl: copyObj(plane()) });
+  rebuildFeatures();
+  toast("已在 (" + cfg.x + ", " + cfg.y + ") 打孔 · 随草图联动");
+}
+
+/* --------------------------------------------------------------------------
+ * 11. 3D 渲染
+ * ------------------------------------------------------------------------ */
+function resizeView() {
+  if (!S.r3) return;
+  var r = stage.getBoundingClientRect();
+  if (r.width < 2 || r.height < 2) return;
+  S.r3.setSize(Math.round(r.width), Math.round(r.height), false);
+  /* ★ bug1：fit3D 只在有实体时才跑；无实体时正交相机保持 ±80 方形视锥，
+     映射到宽>高（或高>宽）的画布上比例不一致，草图正方形会显示成长方形。
+     这里无论有没有实体，都按画布纵横比校正视锥（保持半高不变）。 */
+  var a = Math.max(0.4, r.width / Math.max(1, r.height));
+  var half = (S.cam3.top - S.cam3.bottom) / 2 / Math.max(0.05, S.cam3.zoom || 1);
+  S.cam3.left = -half * a; S.cam3.right = half * a;
+  S.cam3.top = half; S.cam3.bottom = -half;
+  S.cam3.updateProjectionMatrix();
+  fit3D();
+}
+function ensure3D() {
+  if (S.r3) return true;
+  try {
+    S.r3 = new CL_T.WebGLRenderer({ canvas: view, antialias: true, alpha: false });
+  } catch (e) { toast("无法创建 3D 画布"); return false; }
+  S.r3.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  S.r3.setClearColor(0xe9eef5, 1);
+  S.scene3 = new CL_T.Scene();
+  S.cam3 = new CL_T.OrthographicCamera(-80, 80, 80, -80, 0.1, 4000);
+  S.cam3.up.set(0, 0, 1);
+  S.cam3.position.set(150, -180, 130); S.cam3.lookAt(0, 0, 0);
+  S.scene3.add(new CL_T.HemisphereLight(0xffffff, 0x9fb0c4, 0.85));
+  var d1 = new CL_T.DirectionalLight(0xffffff, 0.65); d1.position.set(90, -120, 160); S.scene3.add(d1);
+  var d2 = new CL_T.DirectionalLight(0xcfe0ff, 0.35); d2.position.set(-120, 80, 60); S.scene3.add(d2);
+  S.ctrl3 = new CL_T.OrbitControls(S.cam3, view);
+  S.ctrl3.enableDamping = true; S.ctrl3.dampingFactor = 0.09;
+  S.ctrl3.touches.ONE = CL_T.TOUCH.ROTATE; S.ctrl3.touches.TWO = CL_T.TOUCH.DOLLY_PAN;
+  resizeView();
+  loop3D();
+  return true;
+}
+/* 自定义棱边提取：只画「被两个面共享且二面角大」的真实棱边。
+   EdgesGeometry 会把 CSG 分裂产生的 T 型碎边（只属一个三角形）也画出来，
+   切口处就成了一把扇子；这里按顶点焊接 + 角度阈值过滤。 */
+function solidEdges(g, deg) {
+  var pos = g.getAttribute("position"), tris = Math.floor(pos.count / 3);
+  var map = {}, keys = [], i;
+  function key(x, y, z) { return x.toFixed(3) + "|" + y.toFixed(3) + "|" + z.toFixed(3); }
+  var triN = [];
+  for (i = 0; i < tris; i++) {
+    var ax = pos.getX(i * 3), ay = pos.getY(i * 3), az = pos.getZ(i * 3);
+    var bx = pos.getX(i * 3 + 1), by = pos.getY(i * 3 + 1), bz = pos.getZ(i * 3 + 1);
+    var cx = pos.getX(i * 3 + 2), cy = pos.getY(i * 3 + 2), cz = pos.getZ(i * 3 + 2);
+    var ux = bx - ax, uy = by - ay, uz = bz - az, vx = cx - ax, vy = cy - ay, vz = cz - az;
+    var nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    var l = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+    triN.push([nx / l, ny / l, nz / l]);
+    var ids = [[ax, ay, az], [bx, by, bz], [cx, cy, cz]];
+    for (var k = 0; k < 3; k++) {
+      var p = ids[k], q = ids[(k + 1) % 3];
+      var ka = key(p[0], p[1], p[2]), kb = key(q[0], q[1], q[2]);
+      var ek = ka < kb ? ka + "#" + kb : kb + "#" + ka;
+      if (!map[ek]) { map[ek] = { a: p, b: q, t: [i], keys: [ka, kb] }; keys.push(ek); }
+      else map[ek].t.push(i);
+    }
+  }
+  var out = [], cosLim = Math.cos(deg * Math.PI / 180);
+  keys.forEach(function (ek) {
+    var e = map[ek];
+    if (e.t.length !== 2) return;                    // T 型碎边 / 裂缝边：不画
+    var n1 = triN[e.t[0]], n2 = triN[e.t[1]];
+    var d = n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2];
+    if (d > cosLim) return;                          // 共面拼接边：不画
+    out.push(new CL_T.Vector3(e.a[0], e.a[1], e.a[2]), new CL_T.Vector3(e.b[0], e.b[1], e.b[2]));
+  });
+  return out;
+}
+function rebuild3D() {
+  if (!S.r3 && S.solid) ensure3D();
+  if (!S.scene3) return;
+  if (S.mesh) { S.scene3.remove(S.mesh); S.mesh.geometry.dispose(); S.mesh.material.dispose(); S.mesh = null; }
+  if (S.edges) { S.scene3.remove(S.edges); S.edges.geometry.dispose(); S.edges.material.dispose(); S.edges = null; }
+  clearEdgeHighlight(); S.pickedEdge = null;
+  if (!S.solid) { refreshAll(); return; }
+  var g = csgGeom(S.solid);
+  S.mesh = new CL_T.Mesh(g, new CL_T.MeshPhongMaterial({ color: 0x8fb7e8, shininess: 38, side: CL_T.DoubleSide }));
+  S.scene3.add(S.mesh);
+  var epts = solidEdges(g, 24);
+  S.edges = new CL_T.LineSegments(new CL_T.BufferGeometry().setFromPoints(epts),
+    new CL_T.LineBasicMaterial({ color: 0x2e5a91, transparent: true, opacity: 0.8 }));
+  S.scene3.add(S.edges);
+  fit3D();
+}
+function fit3D() {
+  if (!S.cam3 || !S.mesh) return;
+  var r = view.getBoundingClientRect();
+  if (r.width < 2 || r.height < 2) return;
+  var box = new CL_T.Box3().setFromObject(S.mesh), c = box.getCenter(new CL_T.Vector3()), sz = box.getSize(new CL_T.Vector3());
+  var a = Math.max(0.4, r.width / Math.max(1, r.height));
+  var half = Math.max(sz.x, sz.y, sz.z, 10) * 0.72 / Math.min(1, a);
+  S.cam3.left = -half * a; S.cam3.right = half * a; S.cam3.top = half; S.cam3.bottom = -half;
+  S.cam3.updateProjectionMatrix();
+  /* 保持当前观察方向，只调整距离与目标 —— 不打断草图的正视角度 */
+  var dir = new CL_T.Vector3(1.6, -2, 1.3).normalize();
+  if (S.ctrl3) {
+    dir.copy(S.cam3.position).sub(S.ctrl3.target);
+    if (dir.lengthSq() < 1e-6) dir.set(1.6, -2, 1.3);
+    dir.normalize();
+  }
+  var dist = Math.max(sz.x, sz.y, sz.z, 10) * 2.4 + 60;
+  S.cam3.position.copy(c).addScaledVector(dir, dist);
+  S.cam3.lookAt(c);
+  if (S.ctrl3) { S.ctrl3.target.copy(c); S.ctrl3.update(); }
+}
+function loop3D() {
+  cancelAnimationFrame(S.raf3);
+  var tick = function () {
+    if (!S.active) return;
+    S.raf3 = requestAnimationFrame(tick);
+    if (!S.r3) return;
+    S.ctrl3.update();
+    S.r3.render(S.scene3, S.cam3);
+    updateLabels();
+  };
+  S.raf3 = requestAnimationFrame(tick);
+}
+
+/* --------------------------------------------------------------------------
+ * 12. 右侧属性面板
+ * ------------------------------------------------------------------------ */
+function renderInspector() {
+  var p = plane(), sel = selectedEntities(), f = S.feature, h = S.hole, np = S.newPlane;
+  var curCnt = S.entities.filter(function (e) { return e.pl === p.id; }).length;
+  var otherCnt = S.entities.length - curCnt;
+  var html = "";
+  html += '<div class="cl-sec" data-sec="planes"><h4>基准面 <span style="color:#a3b1c3">点选切换</span><i>▾</i></h4><div class="cl-list">';
+  S.planes.forEach(function (q) {
+    html += '<div class="cl-plane' + (q.id === p.id ? " on" : "") + '" data-plane="' + q.id + '">' +
+      '<i style="background:' + q.color + '"></i>' + esc(q.name) + '<em>' + esc(q.tag) + "</em></div>";
+  });
+  html += "</div><div class='cl-row'><select id='pType'>" +
+    [["offset", "基于参考面平移"], ["fv", "正垂面"], ["pv", "铅垂面"], ["lv", "侧垂面"]].map(function (o) {
+      return '<option value="' + o[0] + '"' + (np.type === o[0] ? " selected" : "") + ">" + o[1] + "</option>";
+    }).join("") + "</select></div>";
+  html += '<div class="cl-row"><span>参考</span><select id="pRef">' + S.planes.filter(function (q) { return q.type !== "face"; }).map(function (q) {
+    return '<option value="' + q.id + '"' + (np.ref === q.id ? " selected" : "") + ">" + esc(q.name) + "</option>";
+  }).join("") + "</select></div>";
+  html += '<div class="cl-row"><span>' + (np.type === "offset" ? "距离" : "角度") + '</span><input id="pVal" type="number" step="1" value="' +
+    (np.type === "offset" ? np.dist : np.angle) + '"></div>';
+  html += '<div class="cl-row"><button class="cl-btn" id="pAdd">＋ 新建基准面</button></div>' +
+    '<div class="cl-hint">也可用「拾取面」工具直接点模型表面生成基准面。</div></div>';
+
+  html += '<div class="cl-sec" data-sec="ents"><h4>草图实体 <span>' + curCnt + " 个·本面</span><i>▾</i></h4><div class='cl-list'>";
+  if (!curCnt) html += '<div class="cl-hint">当前基准面暂无草图 · 用左侧工具在网格上拖画</div>';
+  S.entities.forEach(function (e, ei) {
+    if (e.pl !== p.id) return;
+    html += '<div class="cl-ent' + (e.sel ? " on" : "") + '" data-ent="' + e.id + '"><b>' +
+      TOOL_NAME[e.kind] + " #" + (ei + 1) + "</b><s data-del=\"" + e.id + '">✕</s></div>';
+  });
+  html += "</div>";
+  if (sel.length === 1) {
+    html += '<div style="margin-top:6px;color:#8192a8;font-size:10px">' + esc(sel[0].id) + " · 尺寸标注</div>";
+    dimFields(sel[0]).forEach(function (d) {
+      html += '<div class="cl-row"><span>' + esc(d[0]) + '</span><input type="number" step="0.1" data-dim="' + d[1] + '" value="' +
+        (Math.round(d[2] * 100) / 100) + '"' + (S.sketchOn ? "" : " disabled") + '><em style="font-style:normal;color:#9aa9bb">' + d[3] + "</em></div>";
+    });
+  }
+  if (otherCnt) html += '<div class="cl-hint">其它基准面还有 ' + otherCnt + " 个实体（切到对应基准面编辑）</div>";
+  if (!S.sketchOn) html += '<div class="cl-hint">草图已锁定 · 点底部「草图绘制」继续编辑</div>';
+  html += '<div class="cl-row" style="margin-top:6px">' +
+    '<label style="flex:1;display:flex;gap:4px;align-items:center;font-size:11px;color:#7b8ca2"><input type="checkbox" id="vDim"' + (S.dims ? " checked" : "") + '>尺寸标注</label>' +
+    '<label style="flex:1;display:flex;gap:4px;align-items:center;font-size:11px;color:#7b8ca2"><input type="checkbox" id="vGrid"' + (S.grid ? " checked" : "") + '>网格</label></div>';
+  html += "</div>";
+
+  html += '<div class="cl-sec" data-sec="feat"><h4>特征参数 <span>' + S.features.length + " 个特征</span><i>▾</i></h4>" +
+    '<div class="cl-hint">轮廓取自<b>选中的草图</b>（没选就用当前基准面全部）· 改草图后特征自动重建</div>' +
+    '<div class="cl-row"><span>起点</span><input id="fStart" type="number" step="1" value="' + f.start + '"></div>' +
+    '<div class="cl-row"><span>终点</span><input id="fEnd" type="number" step="1" value="' + f.end + '"></div>' +
+    '<div class="cl-row"><span>方向</span><select id="fDir"><option value="1"' + (f.dir > 0 ? " selected" : "") + '>基准面法向</option><option value="-1"' + (f.dir < 0 ? " selected" : "") + '>反向</option></select></div>' +
+    '<div class="cl-row"><span>布尔</span><select id="fBool">' +
+      [["auto", "自动（新建/合并）"], ["union", "合并"], ["cut", "切除"]].map(function (o) {
+        return '<option value="' + o[0] + '"' + (f.bool === o[0] ? " selected" : "") + ">" + o[1] + "</option>";
+      }).join("") + "</select></div>" +
+    '<div class="cl-row"><span>旋转轴</span><select id="fAxis">' +
+      [["u", "水平 U 轴"], ["v", "垂直 V 轴"], ["line", "选中的直线"]].map(function (o) {
+        return '<option value="' + o[0] + '"' + (f.axis === o[0] ? " selected" : "") + ">" + o[1] + "</option>";
+      }).join("") + "</select></div>" +
+    '<div class="cl-row"><span>角度</span><input id="fAng" type="number" step="15" value="' + f.angle + '"></div>' +
+    '<label class="cl-hint"><input type="checkbox" id="fPartial"' + (f.partial ? " checked" : "") + "> 部分特征：只用选中的封闭区域</label>" +
+    '<div class="cl-row"><button class="cl-btn pri" id="bExt">拉伸</button><button class="cl-btn" id="bCut">切除</button><button class="cl-btn teal" id="bRev">旋转</button></div></div>';
+
+  if (S.tool === "linear" || S.tool === "circular") {
+    html += '<div class="cl-sec" data-sec="pattern"><h4>' + (S.tool === "linear" ? "线性阵列" : "圆周阵列") + "<i>▾</i></h4>";
+    if (S.tool === "linear") {
+      html += '<div class="cl-row"><span>份数</span><input id="aCount" type="number" value="3"></div>' +
+        '<div class="cl-row"><span>ΔU</span><input id="aDx" type="number" value="20"></div>' +
+        '<div class="cl-row"><span>ΔV</span><input id="aDy" type="number" value="0"></div>';
+    } else {
+      html += '<div class="cl-row"><span>份数</span><input id="aCount" type="number" value="4"></div>' +
+        '<div class="cl-row"><span>圆心U</span><input id="aCx" type="number" value="0"></div>' +
+        '<div class="cl-row"><span>圆心V</span><input id="aCy" type="number" value="0"></div>' +
+        '<div class="cl-row"><span>步距角</span><input id="aAng" type="number" value="90"></div>';
+    }
+    html += '<div class="cl-row"><button class="cl-btn pri" id="aGo">应用阵列</button></div></div>';
+  }
+
+  html += '<div class="cl-sec" data-sec="post"><h4>实体后处理<i>▾</i></h4>' +
+    '<div class="cl-row"><span>圆角R</span><input id="filR" type="number" step="0.5" value="' + f.radius + '"></div>' +
+    '<div class="cl-row"><button class="cl-btn" id="bFillet">棱边圆角</button></div>' +
+    '<div class="cl-hint">先用「选择」工具点一条棱边。</div>' +
+    '<div class="cl-row"><span>孔心U/V</span><input id="hX" type="number" value="' + h.x + '"><input id="hY" type="number" value="' + h.y + '"></div>' +
+    '<div class="cl-row"><span>直径</span><input id="hD" type="number" value="' + h.d + '"></div>' +
+    '<div class="cl-row"><span>深度</span><input id="hDep" type="number" value="' + h.depth + '"></div>' +
+    '<div class="cl-row"><select id="hType">' +
+      [["normal", "常规孔"], ["counterbore", "沉孔"], ["countersink", "沉头孔"]].map(function (o) {
+        return '<option value="' + o[0] + '"' + (h.type === o[0] ? " selected" : "") + ">" + o[1] + "</option>";
+      }).join("") + "</select></div>" +
+    '<div class="cl-row"><span>沉孔径</span><input id="hCbD" type="number" value="' + h.cbD + '"><span>深</span><input id="hCbDep" type="number" value="' + h.cbDepth + '"></div>' +
+    '<div class="cl-row"><button class="cl-btn teal" id="bHole">按坐标打孔</button></div>' +
+    '<div class="cl-hint">三角数 ' + (S.mesh ? S.mesh.geometry.userData.tris : 0) + (S.solid ? " · 实体已就绪" : " · 尚无实体") + "</div></div>";
+
+  inspector.innerHTML = html;
+  Object.keys(S.secOpen).forEach(function (k) {
+    var sec = inspector.querySelector('[data-sec="' + k + '"]');
+    if (sec) sec.classList.toggle("closed", !S.secOpen[k]);
+  });
+}
+function refreshAll() {
+  if (!S.active) return;
+  ensure3D(); resizeView(); updateSketch3D(); renderInspector();
+}
+
+/* --------------------------------------------------------------------------
+ * 13. 事件绑定
+ * ------------------------------------------------------------------------ */
+rail.addEventListener("click", function (ev) {
+  var b = ev.target.closest("[data-tool]");
+  if (b) setTool(b.getAttribute("data-tool"));
+});
+view.addEventListener("pointerdown", onDown);
+view.addEventListener("pointermove", onMove);
+view.addEventListener("pointerup", onUp);
+view.addEventListener("pointercancel", onUp);
+view.addEventListener("pointerleave", function () { ball.classList.remove("on"); });
+view.addEventListener("dblclick", function () {
+  if (S.tool === "spline" && S.splinePts.length >= 2) {
+    addEntity("spline", { pts: copyObj(S.splinePts) }); S.splinePts = []; refreshDyn();
+  }
+});
+window.addEventListener("keydown", function (ev) {
+  if (!S.active) return;
+  if (ev.key === "Enter" && S.tool === "spline" && S.splinePts.length >= 2) {
+    addEntity("spline", { pts: copyObj(S.splinePts) }); S.splinePts = []; refreshDyn();
+  }
+  if (ev.key === "Escape") cancelDraw();
+});
+$("clBack").addEventListener("click", function () { close(); });
+$("clUndo").addEventListener("click", undo);
+$("clRedo").addEventListener("click", redo);
+$("clSketch").addEventListener("click", function () { setSketch(!S.sketchOn); });
+$("clFront").addEventListener("click", function () { facePlane(); toast("视角已转正对「" + plane().name + "」"); });
+$("clClear").addEventListener("click", function () {
+  S.confirmStage = 1;
+  $("clConfirmMsg").innerHTML = "确定要<b>清空所有草图和模型</b>吗？<br>将删除全部草图、特征与实体，且不可恢复。";
+  $("clOkClr").textContent = "继续";
+  $("clConfirm").hidden = false;
+});
+$("clCancelClr").addEventListener("click", function () {
+  $("clConfirm").hidden = true; S.confirmStage = 0; toast("已取消清空");
+});
+$("clOkClr").addEventListener("click", function () {
+  if (S.confirmStage === 1) {
+    S.confirmStage = 2;
+    $("clConfirmMsg").innerHTML = "最后确认：<b>清空后无法恢复</b>。<br>真的要清空全部草图与模型吗？";
+    $("clOkClr").textContent = "我确认，全部清空";
+    return;
+  }
+  $("clConfirm").hidden = true; S.confirmStage = 0;
+  doClear();
+});
+function setSketch(on) {
+  S.sketchOn = !!on;
+  $("clSketch").classList.toggle("on", S.sketchOn);
+  if (!S.sketchOn) {
+    cancelDraw();
+    if (S.tool !== "select" && S.tool !== "face") setTool("select");
+    toast("草图已锁定 · 可拉伸/切除/旋转 · 再点「草图绘制」继续编辑");
+  } else {
+    toast("草图绘制中 · 当前基准面「" + plane().name + "」");
+  }
+  renderRail(); renderInspector();
+}
+function doClear() {
+  S.entities = []; S.features = []; S.solid = null; S.pickedEdge = null;
+  S.planes = basePlanes(); S.planeId = "front";
+  S.history.length = 0; S.future.length = 0;
+  cancelDraw();
+  rebuild3D(); facePlane(); refreshAll();
+  toast("已清空全部草图与模型");
+}
+inspTab.addEventListener("click", function () { S.inspOpen = !S.inspOpen; syncInsp(); });
+inspector.addEventListener("click", function (ev) {
+  var t = ev.target, id;
+  var h4 = t.closest && t.closest(".cl-sec h4");
+  if (h4) {
+    var sec = h4.parentElement, key = sec.getAttribute("data-sec");
+    if (key) {
+      S.secOpen[key] = !S.secOpen[key];
+      sec.classList.toggle("closed", !S.secOpen[key]);
+    }
+    return;
+  }
+  if ((id = t.getAttribute && t.getAttribute("data-plane"))) {
+    S.planeId = id; facePlane(); refreshAll();
+    toast("已切换到「" + plane().name + "」· 该面草图 " + S.entities.filter(function (e) { return e.pl === id; }).length + " 个");
+    return;
+  }
+  if ((id = t.getAttribute && t.getAttribute("data-ent"))) {
+    S.entities.forEach(function (e) { e.sel = e.id === id; }); refreshAll(); return;
+  }
+  if ((id = t.getAttribute && t.getAttribute("data-del"))) {
+    snapshot(); S.entities = S.entities.filter(function (e) { return e.id !== id; });
+    refreshAll(); markDirty(); return;
+  }
+  switch (t.id) {
+    case "pAdd": {
+      var v = num($("pVal").value, 10);
+      if (npType() === "offset") S.newPlane.dist = v; else S.newPlane.angle = v;
+      addPlaneFromUI(); break;
+    }
+    case "bExt": featureExtrude("add"); break;
+    case "bCut": featureExtrude("cut"); break;
+    case "bRev": featureRevolve(); break;
+    case "aGo": {
+      var cfg = { count: num($("aCount").value, 3) };
+      if (S.tool === "linear") { cfg.dx = num($("aDx").value, 20); cfg.dy = num($("aDy").value, 0); applyPattern("linear", cfg); }
+      else { cfg.cx = num($("aCx").value, 0); cfg.cy = num($("aCy").value, 0); cfg.angle = num($("aAng").value, 90); applyPattern("circular", cfg); }
+      break;
+    }
+    case "bFillet": fillet(num($("filR").value, 2)); break;
+    case "bHole": {
+      var hcfg = {
+        x: num($("hX").value, 0), y: num($("hY").value, 0), d: num($("hD").value, 6),
+        depth: num($("hDep").value, 12), type: $("hType").value,
+        cbD: num($("hCbD").value, 10), cbDepth: num($("hCbDep").value, 4), csAngle: 90
+      };
+      S.hole = hcfg; drillHole(hcfg); break;
+    }
+  }
+});
+inspector.addEventListener("change", function (ev) {
+  var t = ev.target, sel = selectedEntities();
+  if (t.id === "pType") { S.newPlane.type = t.value; renderInspector(); return; }
+  if (t.id === "pRef") { S.newPlane.ref = t.value; return; }
+  if (t.id === "pVal") { if (S.newPlane.type === "offset") S.newPlane.dist = num(t.value, 10); else S.newPlane.angle = num(t.value, 45); return; }
+  if (t.id === "fStart") { S.feature.start = num(t.value, 0); return; }
+  if (t.id === "fEnd") { S.feature.end = num(t.value, 10); return; }
+  if (t.id === "fDir") { S.feature.dir = num(t.value, 1); return; }
+  if (t.id === "fBool") { S.feature.bool = t.value === "new" ? "auto" : t.value; return; }
+  if (t.id === "fAxis") { S.feature.axis = t.value; return; }
+  if (t.id === "fAng") { S.feature.angle = num(t.value, 360); return; }
+  if (t.id === "fPartial") { S.feature.partial = !!t.checked; return; }
+  if (t.id === "vDim") { S.dims = !!t.checked; updateLabels(); return; }
+  if (t.id === "vGrid") { S.grid = !!t.checked; updateSketch3D(); return; }
+  if (t.getAttribute && t.getAttribute("data-dim") && sel.length === 1) {
+    if (!S.sketchOn) { toast("草图已锁定 · 点底部「草图绘制」继续编辑"); return; }
+    snapshot(); applyDim(sel[0], t.getAttribute("data-dim"), num(t.value, 1)); return;
+  }
+});
+function npType() { var e = $("pType"); return e ? e.value : S.newPlane.type; }
+window.addEventListener("resize", function () {
+  if (!S.active) return;
+  resizeView(); updateSketch3D();
+});
+
+/* --------------------------------------------------------------------------
+ * 14. 开关 / 对外 API / 首页卡片
+ * ------------------------------------------------------------------------ */
+function open() {
+  if (S.active) return;
+  S.prevActive = !!window.__spActive;
+  window.__spActive = true;
+  S.active = true; root.hidden = false;
+  var home = $("home"); if (home) home.hidden = true;
+  if (!S.planes.length) S.planes = basePlanes();
+  S.planeId = S.planes[0].id;
+  setTool("select"); syncInsp();
+  ensure3D(); resizeView();
+  facePlane();
+  refreshAll();
+  requestAnimationFrame(function () { resizeView(); updateSketch3D(); });
+}
+function close() {
+  if (!S.active) return;
+  S.active = false; root.hidden = true;
+  window.__spActive = S.prevActive;
+  cancelAnimationFrame(S.raf3);
+  labelsEl.innerHTML = "";
+  var home = $("home"); if (home) home.hidden = false;
+}
+window.CADLab = {
+  open: open,
+  close: close,
+  isOpen: function () { return S.active; },
+  state: function () {
+    return {
+      active: S.active, view: "unified", tool: S.tool, plane: S.planeId,
+      planes: S.planes.length,
+      entities: S.entities.filter(function (e) { return e.pl === S.planeId; }).length,
+      entitiesAll: S.entities.length,
+      tris: S.mesh ? S.mesh.geometry.userData.tris : 0,
+      solid: !!S.solid, dims: S.dims, grid: S.grid, sketchOn: S.sketchOn,
+      features: S.features.length, feature: copyObj(S.feature)
+    };
+  },
+  mode: function () { return "unified"; },
+  refresh: refreshAll,
+  plane: function (id) {
+    S.planeId = id; facePlane(); refreshAll(); return plane();
+  },
+  addPlane: function (cfg) {
+    S.newPlane.type = cfg.type || "offset"; S.newPlane.ref = cfg.ref || S.planeId;
+    S.newPlane.dist = num(cfg.dist, 10); S.newPlane.angle = num(cfg.angle, 45);
+    return addPlaneFromUI();
+  },
+  add: function (kind, def, planeId) {
+    if (planeId) S.planeId = planeId;
+    return addEntity(kind, def).id;
+  },
+  select: function (ids) {
+    S.entities.forEach(function (e) { e.sel = ids.indexOf(e.id) >= 0 || ids.indexOf(e.kind) >= 0; });
+    refreshAll(); return selectedEntities().length;
+  },
+  pattern: function (kind, cfg) { applyPattern(kind, cfg); },
+  trim: function (path) { applyTrim(path.map(function (p) { return point(p.x, p.y); })); },
+  extrude: function (o) {
+    o = o || {};
+    S.feature.start = num(o.start, 0); S.feature.end = num(o.end, 10);
+    S.feature.dir = o.dir === -1 ? -1 : 1;
+    S.feature.bool = !o.bool || o.bool === "new" ? "auto" : o.bool;
+    S.feature.partial = !!o.partial;
+    featureExtrude(S.feature.bool === "cut" ? "cut" : "add"); return !!S.solid;
+  },
+  cut: function (o) { o = o || {}; o.bool = "cut"; return this.extrude(o); },
+  revolve: function (o) {
+    o = o || {}; S.feature.axis = o.axis || "u"; S.feature.angle = num(o.angle, 360);
+    S.feature.bool = o.bool || "new"; S.feature.partial = !!o.partial;
+    featureRevolve(); return !!S.solid;
+  },
+  clear: function () { doClear(); },
+  sketch: function (on) { setSketch(on !== false); return S.sketchOn; },
+  fillet: function (r) { fillet(num(r, 2)); return !!S.solid; },
+  hole: function (o) {
+    o = o || {};
+    var h = { x: num(o.x, 0), y: num(o.y, 0), d: num(o.d, 6), depth: num(o.depth, 12),
+              type: o.type || "normal", cbD: num(o.cbD, 10), cbDepth: num(o.cbDepth, 4), csAngle: 90 };
+    drillHole(h); return !!S.solid;
+  },
+  pickFace: function (cx, cy) {
+    var h = pickFaceAt(cx, cy);
+    return h ? (addFacePlane(h), plane()) : null;
+  },
+  debug: function () {
+    return {
+      cam: S.cam3 ? S.cam3.position.toArray() : null,
+      target: S.ctrl3 ? S.ctrl3.target.toArray() : null,
+      zoom: S.cam3 ? S.cam3.zoom : null,
+      frustum: S.cam3 ? [S.cam3.left, S.cam3.right, S.cam3.top, S.cam3.bottom] : null,
+      mesh: !!S.mesh,
+      edges: S.edges ? S.edges.geometry.getAttribute("position").count / 2 : 0,
+      enabled: S.ctrl3 ? S.ctrl3.enabled : null,
+      touches: S.ctrl3 ? { one: S.ctrl3.touches.ONE, two: S.ctrl3.touches.TWO } : null,
+      mouse: S.ctrl3 ? S.ctrl3.mouseButtons.LEFT : null
+    };
+  },
+  save: function () { return { planes: copyObj(S.planes), entities: copyObj(S.entities), features: copyObj(S.features), solid: S.solid ? S.solid.clone() : null }; },
+  load: function (d) {
+    snapshot(); S.planes = copyObj(d.planes); S.planeId = S.planes[0].id;
+    S.entities = copyObj(d.entities); S.features = d.features ? copyObj(d.features) : [];
+    S.solid = d.solid ? d.solid.clone() : null;
+    rebuild3D(); refreshAll();
+  }
+};
+
+var homeCards = document.getElementById("cards");
+if (homeCards) {
+  var card = document.createElement("button");
+  card.className = "card";
+  card.setAttribute("data-cadlab", "1");
+  card.innerHTML =
+    '<span class="ico" style="background:#3563e920;border-color:#3563e955">' +
+    '<svg viewBox="0 0 44 44" fill="none" stroke="#78a4ff" stroke-width="2" stroke-linejoin="round">' +
+    '<path d="M7 34 L7 12 L22 7 L37 12 L37 34 L22 39 Z"/><path d="M7 12 L22 17 L37 12 M22 17 L22 39" stroke-dasharray="3 2"/>' +
+    '<rect x="13" y="21" width="9" height="9"/><circle cx="29" cy="26" r="4.5"/></svg></span>' +
+    '<span class="txt"><span class="c-name">参数化草图建模台</span>' +
+    '<span class="c-desc">基准面 · 草图 · 拉伸/切除/旋转 · 圆角/打孔</span></span><span class="go">›</span>';
+  card.addEventListener("click", open);
+  homeCards.insertBefore(card, homeCards.firstChild);
+}
+})();
+
 </script>
 </body>
 </html>
