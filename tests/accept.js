@@ -1,4 +1,4 @@
-/* Full acceptance suite for the four reported items. Run: node test2/accept.js */
+/* Full acceptance suite for the four reported items. Run: node tests/accept.js */
 "use strict";
 const { boot } = require("./boot");
 const app = boot();

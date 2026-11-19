@@ -6,7 +6,7 @@
       把后棱画在前壁上面（用户看到的就是"能透过模型看到里面"）。
       穿透轮廓只在部件"整块埋在主立体里"时才画。
 
-   跑法：node test2/hlpart.js
+   跑法：node tests/hlpart.js
 */
 "use strict";
 const fs = require("fs");

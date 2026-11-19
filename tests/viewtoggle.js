@@ -22,7 +22,7 @@ function camState(){
             curView: curView};
   })()`);
 }
-function click(v){ btn(v).dispatch("click"); return camState(); }
+function click(v){ btn(v).dispatch("click"); app.run("viewAnimFinish && viewAnimFinish()"); return camState(); }
 
 section("1. 第一次点击 = 原行为（主视/俯视/左视）");
 app.run("resetView();");

@@ -1,7 +1,7 @@
 /* v33.3 关键回归：走**真实 DOM 事件流**（pointerdown@canvas → pointerup@window），
    而不是直接调用 tapPick。这是之前所有测试都缺的一环 ——
    p1.html 把 pointerup 注册在 window 上，stub 成空函数就会让"点了没反应"被误判为正常。
-   运行: node test2/eventflow.js */
+   运行: node tests/eventflow.js */
 "use strict";
 const { boot } = require("./boot");
 const app = boot();

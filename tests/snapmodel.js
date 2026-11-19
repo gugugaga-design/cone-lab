@@ -3,7 +3,7 @@
    ② 拖部件/相贯体时与其它模型刚好接触；
    ③ 顺带修掉旧脱离曲线在 SNAP_OFF 处跳 2.8mm 的问题。
 
-   跑法：node test2/snapmodel.js
+   跑法：node tests/snapmodel.js
 */
 "use strict";
 const fs = require("fs");

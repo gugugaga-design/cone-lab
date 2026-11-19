@@ -9,7 +9,7 @@
    ③ 分块网格可见
    ④ 真实事件流点锥顶只隐藏 1 块，其余保留
 
-   运行: node test2/tintpick.js */
+   运行: node tests/tintpick.js */
 "use strict";
 const { boot } = require("./boot");
 const app = boot();

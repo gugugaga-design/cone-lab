@@ -20,7 +20,7 @@
    小楔形。修法：ρ(θ) 在角点方向取局部极大，对局部峰两侧区间做黄金分割搜索，
    把角点精确找回（面积回到 2150.813、三个角点偏差全为 0）。
 
-   跑法：node test2/solidcap.js
+   跑法：node tests/solidcap.js
 */
 "use strict";
 const fs = require("fs");

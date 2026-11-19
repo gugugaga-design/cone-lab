@@ -6,7 +6,7 @@
    长方体横穿棱锥时锥顶和锥底都在长方体外面，key 都是 "c1:0"
    → 点"隐藏锥顶"把锥底一起隐藏 → 看起来"整个棱锥全没了"。
 
-   运行: node test2/cylpick.js */
+   运行: node tests/cylpick.js */
 "use strict";
 const { boot } = require("./boot");
 const app = boot();

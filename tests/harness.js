@@ -45,7 +45,7 @@ const path = require('path');
 const vm = require('vm');
 
 const ROOT = path.resolve(__dirname, '..');
-const DEFAULT_HTML = path.join(ROOT, 'assets', 'web', 'p1.html');
+const DEFAULT_HTML = path.join(ROOT, 'src', 'index.html');
 
 /* =====================================================================
  * 1. 极简 DOM

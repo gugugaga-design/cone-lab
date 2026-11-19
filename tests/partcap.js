@@ -13,7 +13,7 @@
      · cellCaps 按 ownerPart 路由到 partSectionPoly2D；
      · 封盖材质跳过自己部件的 spec，颜色跟随部件配色。
 
-   跑法：node test2/partcap.js
+   跑法：node tests/partcap.js
 */
 "use strict";
 const fs = require("fs");

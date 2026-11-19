@@ -2,7 +2,7 @@
    这是「隐藏锥顶 → 整块消失」bug 的直接断言层（key 正确 ≠ 渲染区域正确）。
    对每个 cell：CPU 复算其 planes + partSpecs 裁剪语义，统计它接受多少
    属于自己 key 的采样点（覆盖率，应=100%）和多少属于别人 key 的点（越界，应=0）。
-   运行: node test2/cellgeo.js */
+   运行: node tests/cellgeo.js */
 "use strict";
 const { boot } = require("./boot");
 const app = boot();

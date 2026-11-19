@@ -1,5 +1,5 @@
 /* v33.17 回归：点选中空 / 点伸出段无反应 / 移动后撤销残留
-   运行: node test2/pickfix.js */
+   运行: node tests/pickfix.js */
 "use strict";
 const { boot } = require("./boot");
 const app = boot();

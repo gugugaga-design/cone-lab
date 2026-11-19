@@ -1,5 +1,5 @@
 /* v33.29 专项回归：空心圆柱主立体 + 相贯体九种补全。
-   运行: node test2/bodies.js */
+   运行: node tests/bodies.js */
 "use strict";
 const { boot } = require("./boot");
 const app = boot();
