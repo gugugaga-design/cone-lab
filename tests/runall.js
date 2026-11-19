@@ -29,6 +29,7 @@ const SUITES = [
   ["tests/snapmodel.js","自动吸附：模型轮廓+接触"],
   ["tests/snapsweep.js","连续吸附灵敏度+拖动性能"],
   ["tests/solidcap.js", "点选保留剩余块封盖（实体）"],
+  ["tests/filletundo.js","圆角顶点/移动跟随/撤销"],
   ["tests/verify.js",   "独立 harness #1"],
   ["tests/test3/regions.js", "独立 harness #2"],
 ];

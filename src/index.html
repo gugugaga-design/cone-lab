@@ -8944,6 +8944,7 @@ function planeById(id) {
 }
 function addPlaneFromUI() {
   var cfg = S.newPlane, ref = planeById(cfg.ref);
+  snapshot();                                  // v33.54 bug4：加基准面也要能撤销
   var a = cfg.angle * Math.PI / 180, n, u, v, o = ref.origin.slice();
   if (cfg.type === "offset") {
     n = ref.n.slice(); u = ref.u.slice(); v = ref.v.slice();
@@ -8970,6 +8971,7 @@ function addPlaneFromUI() {
 function addFacePlane(hit) {
   var n = hit.face.normal.clone().normalize();
   if (n.lengthSq() < 0.5) return null;
+  snapshot();                                  // v33.54 bug4
   var axes = [new CL_T.Vector3(1, 0, 0), new CL_T.Vector3(0, 1, 0), new CL_T.Vector3(0, 0, 1)];
   var u = axes[0], best = 1;
   axes.forEach(function (a) { var d = Math.abs(a.dot(n)); if (d < best - 1e-6) { best = d; u = a; } });
@@ -9058,25 +9060,46 @@ function facePlane(anim) {
     tweenCam3(S.cam3, S.ctrl3, toPos, o.clone(), 300);
   }
 }
-function snapshot() {
-  S.history.push({ e: copyObj(S.entities), p: S.planeId, s: S.solid ? S.solid.clone() : null, f: copyObj(S.features) });
-  if (S.history.length > 25) S.history.shift();
+/* v33.54 bug4（撤销乱删东西）：
+   旧实现有两处一致性问题 ——
+   ① 快照里没有 features / planes / seq：撤销后重做（或撤销到「加了特征」那一步之前）
+      会把特征表清空；于是"模型还在、棱没了"或者干脆模型消失；
+   ② 不是每个改动都压快照（拉伸/旋转/打孔/圆角/镜像特征、加基准面都没有），
+      而拖草图是**改动之后**才压 —— 于是撤销一步会跨过好几次操作，
+      表现就是"点撤销不是回上一步，而是异常删掉一些东西（边、模型）"。
+   现在统一成：改动**之前**捕获 captureState()，成功后再 pushState(它)；
+   状态里带全 entities/features/planes/seq/solid，撤销/重做都走同一份。 */
+function captureState() {
+  return {
+    e: copyObj(S.entities), p: S.planeId,
+    s: S.solid ? S.solid.clone() : null,
+    f: copyObj(S.features), pl: copyObj(S.planes), seq: S.seq
+  };
+}
+function pushState(st) {
+  if (!st) return;
+  S.history.push(st);
+  if (S.history.length > 40) S.history.shift();
   S.future.length = 0;
 }
+function snapshot() { pushState(captureState()); }
 function restore(st) {
   S.entities = copyObj(st.e); S.planeId = st.p; S.solid = st.s ? st.s.clone() : null;
   S.features = st.f ? copyObj(st.f) : [];
-  S.preview = null; S.pickedEdge = null; S.trimPts = null;
-  refreshAll(); rebuild3D();
+  if (st.pl && st.pl.length) S.planes = copyObj(st.pl);
+  if (st.seq) S.seq = st.seq;
+  S.preview = null; S.pickedEdge = null; S.trimPts = null; S.regionSel = [];
+  clearEdgeHighlight();
+  rebuild3D(); refreshAll();
 }
 function undo() {
   if (!S.history.length) { toast("没有可撤销的操作"); return; }
-  S.future.push({ e: copyObj(S.entities), p: S.planeId, s: S.solid ? S.solid.clone() : null });
+  S.future.push(captureState());
   restore(S.history.pop()); toast("已撤销");
 }
 function redo() {
   if (!S.future.length) { toast("没有可重做的操作"); return; }
-  S.history.push({ e: copyObj(S.entities), p: S.planeId, s: S.solid ? S.solid.clone() : null });
+  S.history.push(captureState());
   restore(S.future.pop()); toast("已重做");
 }
 
@@ -10136,7 +10159,7 @@ function onDown(ev) {
         S.regionSel = [hereR];
       }
       if (S.sketchOn && idsR.length === 1 && hit) {
-        S.drag = { e: hit, last: p };
+        S.drag = { e: hit, last: p, pre: captureState() };
         if (S.ctrl3) S.ctrl3.enabled = false;
       }
       refreshAll();
@@ -10156,7 +10179,7 @@ function onDown(ev) {
       S.entities.forEach(function (e) { e.sel = (e.id === hit.id); });
       S.regionSel = [];
       if (S.sketchOn) {
-        S.drag = { e: hit, last: p };
+        S.drag = { e: hit, last: p, pre: captureState() };
         if (S.ctrl3) S.ctrl3.enabled = false;   // 拖实体期间不许转视角
       }
       refreshAll();
@@ -10240,7 +10263,7 @@ function onMove(ev) {
     else if (d.x0 !== undefined) { d.x0 += dx; d.x1 += dx; d.y0 += dy; d.y1 += dy; }
     else if (d.cx !== undefined) { d.cx += dx; d.cy += dy; }
     else if (d.pts) d.pts.forEach(function (q) { q.x += dx; q.y += dy; });
-    S.drag.last = p; resample(e); updateSketch3D();
+    S.drag.last = p; S.drag.moved = true; resample(e); updateSketch3D();
   } else if (S.trimPts) {
     S.trimPts.push(p); refreshDyn();
   }
@@ -10493,7 +10516,14 @@ function onUp(ev) {
     S.preview = null; S.drag = null; refreshDyn();
     setTool("select"); toast("已切到选择工具 · 单指旋转视角");
   } else if (S.drag && S.drag.e) {
-    S.drag = null; snapshot(); markDirty(); renderInspector();
+    /* v33.54 bug4：旧代码是**拖完才压快照** —— 栈顶那份就是"拖完之后的现状"，
+       撤销时它被弹掉、回到的是上一次操作之前的状态，等于一步跨过两次操作
+       （用户："点撤销不是回到上一步，而是异常删掉一些东西"）。
+       现在按下时就捕获好拖动前的状态，松手（真的移动过）才入栈。 */
+    var preDrag = S.drag.pre, didMove = !!S.drag.moved;
+    S.drag = null;
+    if (didMove && preDrag) pushState(preDrag);
+    markDirty(); renderInspector();
   } else if (S.trimPts) {
     var path = S.trimPts; S.trimPts = null; applyTrim(path);
   }
@@ -11499,8 +11529,11 @@ function rebuildFeatures() {
         }
       } else if (ft.t === "fillet") {
         if (solid) {
-          /* v33.51 bug4：支持整条棱链（曲线棱），逐段扫掠逐段相减 */
-          var segList = (ft.chain && ft.chain.length) ? ft.chain : [ft.seg];
+          /* v33.51 bug4：支持整条棱链（曲线棱），逐段扫掠逐段相减。
+             v33.54 bug2：特征里存的是**拾取那一刻的世界坐标棱段** —— 草图/模型一移动，
+             切除体就留在原地，实体上等于没有圆角（用户："移动 3D 模型后圆角效果会失去"）。
+             现在每次重建都先在**当前**实体上把这条棱重新找回来，再按它整链扫掠。 */
+          var segList = relocateFillet(solid, ft) || ((ft.chain && ft.chain.length) ? ft.chain : [ft.seg]);
           var exactCh = segList.length > 1;
           for (var fk = 0; fk < segList.length; fk++) {
             var cut = filletCutter(solid, { a: V3(segList[fk].a), b: V3(segList[fk].b) }, ft.radius, exactCh);
@@ -11575,6 +11608,7 @@ function featureLoopFailMsg(verb) {
   return "当前基准面没有可" + verb + "的封闭轮廓";
 }
 function featureExtrude(mode) {
+  var pre = captureState();                 // v33.54 bug4：改动前捕获，成功后入栈
   var prof = featureLoopList();
   if (!prof.loops.length) { toast(featureLoopFailMsg(mode === "cut" ? "切除" : "拉伸")); return; }
   var list = prof.list;
@@ -11595,11 +11629,13 @@ function featureExtrude(mode) {
     S.features.pop(); rebuildFeatures();
     toast(ft.error || "拉伸没有生成实体 · 检查起点/终点厚度或轮廓是否自交"); return;
   }
+  pushState(pre);
   toast(mode === "cut" ? "切除完成 · 随草图联动"
     : (had ? "已合并进现有实体 · 与材料重叠时无可见变化（可调起点/终点凸出）"
            : "拉伸成实体" + (prof.filled ? "（已自动带上相邻草图闭合成环）" : "") + " · 随草图联动"));
 }
 function featureRevolve() {
+  var pre = captureState();
   var prof = featureLoopList();
   if (!prof.loops.length) { toast(featureLoopFailMsg("旋转")); return; }
   var list = prof.list;
@@ -11619,6 +11655,7 @@ function featureRevolve() {
   S.features.push(ft);
   rebuildFeatures();
   if (ft.error) { S.features.pop(); rebuildFeatures(); toast(ft.error); return; }
+  pushState(pre);
   toast("旋转完成 · 随草图联动");
 }
 
@@ -11756,8 +11793,8 @@ function faceNormalsNearCsg(csg, seg) {
    现在：从被拾取的段出发，沿"端点相接 + 切向连续"（|dot|>0.98，允许平缓
    曲线、拒绝 90° 拐角）把整条棱链找出来，整链逐段扫掠。
    返回有序段列表 [{a,b},...]（世界坐标 Vector3）。 */
-function edgeChainFrom(picked) {
-  var segs0 = edgeSegments();
+function edgeChainFrom(picked, segsIn) {
+  var segs0 = segsIn && segsIn.length ? segsIn : edgeSegments();
   if (!segs0.length || !picked) return [{ a: picked.a.clone(), b: picked.b.clone() }];
   var EPS = 1e-4;
   var tol = 1e-3 * Math.max(1, segs0.reduce(function (m, s) {
@@ -11784,6 +11821,8 @@ function edgeChainFrom(picked) {
     for (var guard = 0; guard < 1024; guard++) {
       var tip = forward ? pts[pts.length - 1] : pts[0];
       var prev = forward ? pts[pts.length - 2] : pts[1];
+      if (!prev) break;
+      var prevLen = tip.distanceTo(prev);
       var dirTip = forward ? tip.clone().sub(prev) : prev.clone().sub(tip);
       if (dirTip.lengthSq() < 1e-12) break;
       dirTip.normalize();
@@ -11795,9 +11834,22 @@ function edgeChainFrom(picked) {
         else if (samePt(s.b, tip)) { cand = s.a; candDir = s.a.clone().sub(s.b); }
         if (!cand) return;
         if (candDir.lengthSq() < 1e-12) return;
+        var candLen = candDir.length();
         candDir.normalize();
         var dot = Math.abs(candDir.dot(dirTip));
-        if (dot > 0.98 && dot > bestDot) { bestDot = dot; best = { pt: cand.clone(), k: k }; }
+        if (dot > 0.98 && dot > bestDot) {
+          /* v33.54 bug1：转折越明显，长度越要接近本轮上一段。
+             没有这条判据时，直棱的端点一旦接上圆角的**弧段**（弧段与直棱相切、
+             点积 0.98~0.995 一样能过阈值），整条链会从这条棱溜到整圈圆角上，
+             随后沿弧逐段扫掠 —— 顶点附近就啃出一堆碎片（用户说的"毛边"）。
+             共线（dot≥0.999，常见于 CSG 把一条直棱切成几段）不设长度限制。 */
+          var ratioOk = true;
+          if (dot < 0.999 && prevLen > 1e-6) {
+            var ratio = candLen / prevLen;
+            ratioOk = (ratio <= 3 && ratio >= 1 / 3);
+          }
+          if (ratioOk) { bestDot = dot; best = { pt: cand.clone(), k: k }; }
+        }
       });
       if (!best) break;
       used[best.k] = true;
@@ -11809,7 +11861,8 @@ function edgeChainFrom(picked) {
   return out.length ? out : [{ a: picked.a.clone(), b: picked.b.clone() }];
 }
 /* 圆角切除体：方角 − 四分之一圆，沿棱边扫掠 */
-function filletCutter(csg, seg, radius, exactLen) {  var t = seg.b.clone().sub(seg.a), len = t.length();
+function filletCutter(csg, seg, radius, exactLen) {
+  var t = seg.b.clone().sub(seg.a), len = t.length();
   if (len < 0.01) return null;
   t.normalize();
   var norms = faceNormalsNearCsg(csg, seg);
@@ -11826,23 +11879,101 @@ function filletCutter(csg, seg, radius, exactLen) {  var t = seg.b.clone().sub(s
   var y = n2.negate();
   var zAxis = x.clone().cross(y).normalize();
   var r = Math.max(0.2, Math.min(20, radius));
+  /* v33.54 bug1（顶点毛边）：切除体的两条直边原来**正好贴在**实体表面上（轮廓从 (0,0) 起），
+     与实体表面共面 → CSG 在共面处切出大量零面积/细长三角形，渲染出来就是顶点附近的毛边。
+     轮廓整体外扩 m（m 只落在材料外面，相减时不影响结果）。 */
+  var m = Math.max(0.12, Math.min(0.6, r * 0.08));
   var shape = new CL_T.Shape();
-  shape.moveTo(0, 0); shape.lineTo(r, 0);
+  shape.moveTo(-m, -m); shape.lineTo(r, -m);
   for (var i = 0; i <= 16; i++) {
     var a = -Math.PI / 2 - Math.PI / 2 * i / 16;
     shape.lineTo(r + r * Math.cos(a), r + r * Math.sin(a));
   }
-  shape.lineTo(0, r); shape.closePath();
-  var g = new CL_T.ExtrudeGeometry(shape, { depth: exactLen ? len : (len + 2 * r), bevelEnabled: false, curveSegments: 8 });
-  if (!exactLen) g.translate(0, 0, -r);
-  var m = new CL_T.Matrix4().makeBasis(x, y, zAxis);
-  /* zAxis 可能和棱方向 t 相反 —— 反了就换从 seg.b 起扫，保证圆角覆盖整条棱。
-     exactLen：整链圆角时链内各段**按精确长度**扫（两端各长 r 会让相邻段彼此重叠，
-     在曲线棱上多啃出 ~40% 体积，实测 -42 vs 理论 -30）；单段/链端仍各留 r 余量。 */
-  m.setPosition((zAxis.dot(t) >= 0 ? seg.a : seg.b).clone());
-  g.applyMatrix4(m);
+  shape.lineTo(-m, r); shape.closePath();
+  /* v33.54 bug1：扫掠长度收到棱的**精确长度**（旧版单段还两端各留 r，exactLen 参数因此不再需要）。
+     多条棱在同一个顶点交汇时，多留的那截会和邻居的切除体互相穿插，
+     既是毛边的来源，也会把顶点啃出缺口。整链本来就是按段精确长的，现在两者一致。 */
+  var g = new CL_T.ExtrudeGeometry(shape, { depth: len, bevelEnabled: false, curveSegments: 8 });
+  var mtx = new CL_T.Matrix4().makeBasis(x, y, zAxis);
+  /* zAxis 可能和棱方向 t 相反 —— 反了就换从 seg.b 起扫，保证圆角覆盖整条棱。 */
+  mtx.setPosition((zAxis.dot(t) >= 0 ? seg.a : seg.b).clone());
+  g.applyMatrix4(mtx);
   var c = geomToCSG(g); g.dispose();
   return c;
+}
+/* v33.54 bug2：把保存的"圆角棱段"重新对到**当前**实体的棱上。
+   为什么需要：特征里存的是拾取那一刻的世界坐标（[x,y,z] 数组），而草图被拖动/改尺寸后
+   实体整体移动了 —— 切除体留在原处，相减等于没切（实测：拖动 12.5mm 后圆角整个消失，
+   三角形数回到 12）。做法：
+     ① 用"拾取时的实体包围盒中心"当锚点，按当前包围盒中心的位移把棱段搬过去（纯平移精确跟上）；
+     ② 再在当前棱列表里就近吸附到真实的那条棱（方向一致 + 长度接近 + 中点最近）；
+     ③ 用这条棱重新找整链 —— 整圈棱移动后仍然是整圈。
+   注意：不写回 ft（否则每次重建都会叠加一次位移）。 */
+var _csgEdgeCache = (typeof WeakMap === "function") ? new WeakMap() : null;
+function csgCenter(csg) {
+  var mn = [1e18, 1e18, 1e18], mx = [-1e18, -1e18, -1e18];
+  csg.toPolygons().forEach(function (pg) {
+    pg.vertices.forEach(function (v) {
+      var p = v.pos;
+      if (p.x < mn[0]) mn[0] = p.x; if (p.x > mx[0]) mx[0] = p.x;
+      if (p.y < mn[1]) mn[1] = p.y; if (p.y > mx[1]) mx[1] = p.y;
+      if (p.z < mn[2]) mn[2] = p.z; if (p.z > mx[2]) mx[2] = p.z;
+    });
+  });
+  return [(mn[0] + mx[0]) / 2, (mn[1] + mx[1]) / 2, (mn[2] + mx[2]) / 2];
+}
+function csgEdgeList(csg) {
+  if (_csgEdgeCache && _csgEdgeCache.has(csg)) return _csgEdgeCache.get(csg);
+  var out = [], g = null;
+  try {
+    g = csgGeom(csg);
+    var pts = solidEdges(g, 24);
+    for (var i = 0; i + 1 < pts.length; i += 2) out.push({ a: pts[i], b: pts[i + 1] });
+  } catch (e) { out = []; }
+  if (g && g.dispose) g.dispose();
+  if (_csgEdgeCache) _csgEdgeCache.set(csg, out);
+  return out;
+}
+function relocateFillet(solid, ft) {
+  var stored = (ft.chain && ft.chain.length) ? ft.chain : (ft.seg ? [ft.seg] : []);
+  if (!stored.length) return null;
+  var edges = csgEdgeList(solid);
+  if (!edges.length) return null;
+  var dx = 0, dy = 0, dz = 0;
+  if (ft.anchor && ft.anchor.length === 3) {
+    var c = csgCenter(solid);
+    dx = c[0] - ft.anchor[0]; dy = c[1] - ft.anchor[1]; dz = c[2] - ft.anchor[2];
+  }
+  var moved = stored.map(function (s) {
+    return {
+      a: new CL_T.Vector3(s.a[0] + dx, s.a[1] + dy, s.a[2] + dz),
+      b: new CL_T.Vector3(s.b[0] + dx, s.b[1] + dy, s.b[2] + dz)
+    };
+  });
+  function snap(seg) {
+    var mid = seg.a.clone().add(seg.b).multiplyScalar(0.5);
+    var dir = seg.b.clone().sub(seg.a), L0 = dir.length();
+    if (L0 < 1e-6) return null;
+    dir.normalize();
+    var tol = Math.max(1.0, L0 * 0.5), best = null, bd = tol;
+    edges.forEach(function (e) {
+      var L = e.a.distanceTo(e.b);
+      if (L < 1e-6 || L > L0 * 3 || L < L0 / 3) return;
+      var ed = e.b.clone().sub(e.a).normalize();
+      if (Math.abs(ed.dot(dir)) < 0.9) return;
+      var d = e.a.clone().add(e.b).multiplyScalar(0.5).distanceTo(mid);
+      if (d < bd) { bd = d; best = e; }
+    });
+    return best;
+  }
+  var first = null;
+  for (var i = 0; i < moved.length && !first; i++) first = snap(moved[i]);
+  if (!first) {
+    if (!dx && !dy && !dz) return null;            // 没动过 → 走老路径
+    return moved.map(function (s) { return { a: [s.a.x, s.a.y, s.a.z], b: [s.b.x, s.b.y, s.b.z] }; });
+  }
+  var chain = edgeChainFrom({ a: first.a.clone(), b: first.b.clone() }, edges);
+  return chain.map(function (s) { return { a: [s.a.x, s.a.y, s.a.z], b: [s.b.x, s.b.y, s.b.z] }; });
 }
 function fillet(radius) {
   if (!S.solid || !S.pickedEdge) { toast("请先用「选择」工具点一条棱边"); return; }
@@ -11860,9 +11991,12 @@ function fillet(radius) {
     toast("该棱边无法识别相邻两面（可换一条直棱）");
     return;
   }
-  S.features.push({ t: "fillet", radius: r, seg: segsOk[0], chain: segsOk });
+  /* v33.54 bug2：记下实体此刻的包围盒中心当锚点，重建时用它把棱段一起搬走 */
+  var pre = captureState();
+  S.features.push({ t: "fillet", radius: r, seg: segsOk[0], chain: segsOk, anchor: csgCenter(S.solid) });
   S.pickedEdge = null; clearEdgeHighlight();
   rebuildFeatures();
+  pushState(pre);
   toast("已生成 R" + r + " 圆角（" + segsOk.length + " 段棱）· 随草图联动");
 }
 function holeCSGOn(pl, cfg) {
@@ -11889,8 +12023,10 @@ function holeCSGOn(pl, cfg) {
 }
 function drillHole(cfg) {
   if (!S.solid) { toast("请先生成一个实体"); return; }
+  var pre = captureState();
   S.features.push({ t: "hole", cfg: copyObj(cfg), pl: copyObj(plane()) });
   rebuildFeatures();
+  pushState(pre);
   toast("已在 (" + cfg.x + ", " + cfg.y + ") 打孔 · 随草图联动");
 }
 
@@ -11965,10 +12101,18 @@ function solidEdges(g, deg) {
   var out = [], cosLim = Math.cos(deg * Math.PI / 180);
   keys.forEach(function (ek) {
     var e = map[ek];
-    if (e.t.length !== 2) return;                    // T 型碎边 / 裂缝边：不画
-    var n1 = triN[e.t[0]], n2 = triN[e.t[1]];
-    var d = n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2];
-    if (d > cosLim) return;                          // 共面拼接边：不画
+    /* v33.54 bug3：旧判据要求「这条棱恰好被 2 个三角形共用」——
+       CSG 在棱上留下 T 型碎边/共面重复片时（草图一动，布尔结果就变），
+       共享数变成 1 或 3，真实棱被整条丢掉，画面就是"有的边时有时无"。
+       现在改成：**任意一对**相邻三角形的二面角超过阈值就画（共面碎边仍是 0°，照样不画）。 */
+    var ts = e.t, draw = false;
+    for (var i = 0; i < ts.length && !draw; i++) {
+      for (var j = i + 1; j < ts.length; j++) {
+        var n1 = triN[ts[i]], n2 = triN[ts[j]];
+        if (n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2] <= cosLim) { draw = true; break; }
+      }
+    }
+    if (!draw) return;                               // 共面拼接边：不画
     out.push(new CL_T.Vector3(e.a[0], e.a[1], e.a[2]), new CL_T.Vector3(e.b[0], e.b[1], e.b[2]));
   });
   return out;
@@ -11983,11 +12127,17 @@ function rebuild3D() {
   S.snapSegs = null; S.edgeVersion = (S.edgeVersion || 0) + 1;   // 模型变了，轮廓吸附缓存作废
   if (!S.solid) { refreshAll(); return; }
   var g = csgGeom(S.solid);
-  S.mesh = new CL_T.Mesh(g, new CL_T.MeshPhongMaterial({ color: 0x8fb7e8, shininess: 38, side: CL_T.DoubleSide }));
+  /* v33.54 bug3：实体表面用 polygonOffset 往后推一点点 —— 棱线是画在表面上的，
+     两者深度完全相等，视角一斜、模型一动就互相争夺深度缓冲，棱线时有时无
+     （用户："移动草图时有时候有的边在视觉上消失了"）。表面后退 → 棱线永远赢。 */
+  S.mesh = new CL_T.Mesh(g, new CL_T.MeshPhongMaterial({
+    color: 0x8fb7e8, shininess: 38, side: CL_T.DoubleSide,
+    polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1
+  }));
   S.scene3.add(S.mesh);
   var epts = solidEdges(g, 24);
   S.edges = new CL_T.LineSegments(new CL_T.BufferGeometry().setFromPoints(epts),
-    new CL_T.LineBasicMaterial({ color: 0x2e5a91, transparent: true, opacity: 0.8 }));
+    new CL_T.LineBasicMaterial({ color: 0x2e5a91 }));
   S.scene3.add(S.edges);
   /* v33.46：以前每次改草图/加特征都 fit3D()，相机会被反复拽回旧模型上 —— 手感很差。
      现在只在「从无到有」第一次出实体时取景；之后的编辑保持用户当前视角。 */
