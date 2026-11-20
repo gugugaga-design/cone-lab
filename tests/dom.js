@@ -215,6 +215,10 @@ function makeDocument(){
     var c = new FakeEl("div"); c.classList.add("chip"); c.setAttribute("data-t", t); cylAddRow.appendChild(c);
   });
   reg(new FakeEl("div"), "cyls"); panel.appendChild(byId.cyls);
+  /* v33.62：相贯体面板最下面的「自建模型」一行 */
+  reg(new FakeEl("span"), "cmCount"); panel.appendChild(byId.cmCount);
+  reg(new FakeEl("div"), "cmChipRow"); panel.appendChild(byId.cmChipRow);
+  reg(new FakeEl("div"), "cmRowNote").hidden = false; panel.appendChild(byId.cmRowNote);
 
   // #home + #cards
   var home = reg(new FakeEl("div"), "home"); home.hidden = true; body.appendChild(home);
@@ -234,10 +238,8 @@ function makeDocument(){
   reg(new FakeEl("div"), "cmTitle"); cmOv.appendChild(byId.cmTitle);
   reg(new FakeEl("div"), "cmInfo"); cmOv.appendChild(byId.cmInfo);
   var cmTabs = new FakeEl("div"); cmTabs.id = "cmTabs"; cmOv.appendChild(cmTabs);
-  ["owner","all"].forEach(function(f){
-    var b = new FakeEl("button"); b.setAttribute("data-f", f); cmTabs.appendChild(b);
-  });
   reg(new FakeEl("button"), "cmClearPlaced"); cmTabs.appendChild(byId.cmClearPlaced);
+  reg(new FakeEl("button"), "cmCloseTop"); cmTabs.appendChild(byId.cmCloseTop);
   reg(new FakeEl("div"), "cmList"); cmOv.appendChild(byId.cmList);
   var cmDlg = reg(new FakeEl("div"), "cmSaveDlg"); cmDlg.hidden = true; body.appendChild(cmDlg);
   reg(new FakeEl("div"), "cmDlgInfo"); cmDlg.appendChild(byId.cmDlgInfo);
@@ -246,6 +248,11 @@ function makeDocument(){
     var b = new FakeEl("button"); b.setAttribute("data-scope", sc); cmDlg.appendChild(b);
   });
   reg(new FakeEl("button"), "cmCancel"); cmDlg.appendChild(byId.cmCancel);
+  /* v33.62：改名弹窗 */
+  var cmRen = reg(new FakeEl("div"), "cmRenameDlg"); cmRen.hidden = true; body.appendChild(cmRen);
+  reg(new FakeEl("input"), "cmRenameInput"); cmRen.appendChild(byId.cmRenameInput);
+  reg(new FakeEl("button"), "cmRenameOk"); cmRen.appendChild(byId.cmRenameOk);
+  reg(new FakeEl("button"), "cmRenameCancel"); cmRen.appendChild(byId.cmRenameCancel);
 
   var doc = {
     _byId: byId,

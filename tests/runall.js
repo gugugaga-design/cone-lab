@@ -29,8 +29,8 @@ const SUITES = [
   ["tests/solidcap.js", "点选保留剩余块封盖（实体）"],
   ["tests/filletundo.js","圆角顶点/移动跟随/撤销"],
   ["tests/custommodel.js","自建模型：保存/放置/拖动"],
-  ["test/verify.js",   "独立 harness #1"],
-  ["test3/regions.js", "独立 harness #2"],
+  ["tests/verify.js",   "独立 harness #1"],
+  ["tests/test3/regions.js", "独立 harness #2"],
 ];
 
 let fail = 0;
