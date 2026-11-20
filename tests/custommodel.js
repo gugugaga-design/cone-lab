@@ -263,6 +263,27 @@ check("被隐藏的那块画成幽灵层（可再点回来）", gGhost >= 2, gGh
 tapAt(gscreen[0], gscreen[1]);
 check("再点一次能恢复显示",
   R("cells.filter(function(c){return c.ownerPe;}).every(function(c){return c.sel!==false;})") === true);
+/* 反向：点主立体时不能把拾取让给自建模型（两者在同一屏上互不抢占） */
+R("camera.position.set(0,60,260); controls.target.set(30,0,0); camera.lookAt(30,0,0); camera.updateMatrixWorld(true);");
+function screenPt(expr) {
+  return JSON.parse(R(`(function(){
+    var v=${expr}.project(activeCam), r=renderer.domElement.getBoundingClientRect();
+    return JSON.stringify([r.left+(v.x*0.5+0.5)*r.width, r.top+(-v.y*0.5+0.5)*r.height]);
+  })()`));
+}
+const gCone = screenPt("new THREE.Vector3(0,10,0)");
+const gModel = screenPt("new THREE.Vector3(" + 100 + ",6,0)");
+tapAt(gCone[0], gCone[1]);
+check("点主立体只隐藏主立体那一块（自建模型不抢拾取）",
+  R("cells.filter(function(c){return !c.ownerPe && c.sel===false;}).length >= 1 && " +
+    "cells.filter(function(c){return c.ownerPe && c.sel===false;}).length === 0") === true);
+tapAt(gModel[0], gModel[1]);
+check("点自建模型只隐藏它自己那一块（主立体不动）",
+  R("cells.filter(function(c){return c.ownerPe && c.sel===false;}).length >= 1 && " +
+    "cells.filter(function(c){return !c.ownerPe && c.sel===false;}).length === 1") === true);
+check("两块可以同时各隐藏各的（互不干扰）",
+  R("cells.filter(function(c){return c.sel===false;}).length >= 2") === true);
+
 /* 切回"显示全部"：外壳必须回来 */
 R("mode='all'; refresh();");
 check("回到其他模式后自建模型外壳显示回来", R("placedCustom[0].mesh.visible") === true);
