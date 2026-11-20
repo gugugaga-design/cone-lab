@@ -8131,7 +8131,9 @@ function cmInitUI(){
     });
   });
   var back=document.getElementById("cmBack");
-  if(back) back.addEventListener("click",function(){ cmCloseOverlay(); showHome(true); });
+  /* 管理页是从"相贯体面板"或首页进来的浮层：返回＝只关浮层，
+     不能 showHome(true)（那会把正卡在卡片页里的用户弹回功能列表） */
+  if(back) back.addEventListener("click",cmCloseOverlay);
   var closeTop=document.getElementById("cmCloseTop");
   if(closeTop) closeTop.addEventListener("click",cmCloseOverlay);
   /* 改名弹窗 */
