@@ -8890,7 +8890,7 @@ var S = {
   patCfg: { count: 6, dx: 20, dy: 0, cx: 0, cy: 0, angle: 90, dir: "u", reverse: false, axis: "u" },
   polygonN: 6,
   mirrorCfg: { axis: "u", keep: true, plane: "cur", merge: true, scope: "sel" },
-  solid: null, mesh: null, edges: null, pickedEdge: null, hilite: null,
+  solid: null, mesh: null, edges: null, pickedEdge: null, pickedEdges: [], hilite: null,
   skGroups: {}, gridGroup: null, dynGroup: null,
   snapSegs: null, edgeVersion: 0,   // v33.46 模型轮廓吸附缓存（随模型/基准面失效）
   r3: null, scene3: null, cam3: null, ctrl3: null, raf3: 0,
@@ -9088,7 +9088,7 @@ function restore(st) {
   S.features = st.f ? copyObj(st.f) : [];
   if (st.pl && st.pl.length) S.planes = copyObj(st.pl);
   if (st.seq) S.seq = st.seq;
-  S.preview = null; S.pickedEdge = null; S.trimPts = null; S.regionSel = [];
+  S.preview = null; S.pickedEdge = null; S.pickedEdges = []; S.trimPts = null; S.regionSel = [];
   clearEdgeHighlight();
   rebuild3D(); refreshAll();
 }
@@ -9687,10 +9687,12 @@ function setTool(t) {
   /* v33.48：多选是开关而不是工具（点一次开/关，不改当前工具） */
   if (t === "multi") {
     S.multi = !S.multi;
+    /* v33.57 bug1：多选关掉时棱选区一并清掉（单选语义下不保留多选状态） */
+    if (!S.multi && S.pickedEdges.length) { S.pickedEdges = []; rebuildEdgeHighlight(); }
     /* 多选是「点选」的辅助模式：从画图工具切过来时自动回到选择工具，否则点下去还是在画 */
     if (S.multi && S.tool !== "select" && S.tool !== "face" && S.tool !== "trim") setTool("select");
     renderRail();
-    toast(S.multi ? "多选已开 · 点选/点封闭区域内部都会累加" : "多选已关 · 点选只保留一个");
+    toast(S.multi ? "多选已开 · 点选/点封闭区域/点棱边都会累加" : "多选已关 · 点选只保留一个");
     return;
   }
   /* v33.47：特征镜像不依赖草图解锁；阵列/镜像都是「参数卡片」工具 */
@@ -10131,8 +10133,10 @@ function onDown(ev) {
     /* v33.52 bug4b：贴近实体棱边（屏幕 ≤14px）→ 这次按下按"点棱边"处理，
        不再先做区域选中。旧流程里实体的面全都落在草图封闭区域内，
        onDown 直接把区域选掉并 return，棱边永远轮不到（用户："识别不到棱线"）。
-       拖动仍然交给 OrbitControls 转视角（这里只是登记 tap 候选）。 */
-    if (!S.multi && pickEdgeNearScreen(ev, 14)) {
+       拖动仍然交给 OrbitControls 转视角（这里只是登记 tap 候选）。
+       v33.57 bug1：多选模式也走这条（旧版 !S.multi 把多选下的棱边全让给
+       区域选中 → 多选永远选不中棱，更别说多条）。 */
+    if (pickEdgeNearScreen(ev, 14)) {
       S.tap = { x: ev.clientX, y: ev.clientY, moved: false };
       return;
     }
@@ -10379,11 +10383,10 @@ function tapPick(ev) {
   /* v33.52 bug4b：**棱边优先**（屏幕像素距离 ≤14px）。
      旧顺序是"区域选中 → 棱边"，而实体的棱在屏幕上几乎总是投影在草图区域内部，
      区域选中先 return 掉 → 棱边永远选不中（用户："识别不到棱线，无法做圆角"）。
-     多选模式下仍以区域累加为主，不抢棱边。 */
-  if (!S.multi) {
-    var egNear = pickEdgeNearScreen(ev, 14);
-    if (egNear) { selectEdge(egNear); return true; }
-  }
+     v33.57 bug1：多选模式下点棱边 = 加入/移出棱选区（toggleEdgeSel），
+     单选模式照旧 selectEdge。 */
+  var egNear = pickEdgeNearScreen(ev, 14);
+  if (egNear) { if (S.multi) toggleEdgeSel(egNear); else selectEdge(egNear); return true; }
   /* v33.48：点在封闭区域内 → 整组选中围成该区域的草图（多段直线/圆弧一起选上） */
   var p2 = raySketch(ev);
   if (p2) {
@@ -10995,12 +10998,47 @@ function geomToCSG(g0) {
 }
 function csgGeom(csg) {
   var ps = csg.toPolygons(), out = [], i, k;
+  /* v33.55：① 丢掉零面积三角形（BSP 在两块曲面相切处必然留下退化成线的三角）；
+     ② 多边形不再"从 0 号顶点扇形"三角化，改成**从形心扇形**。
+        大面被 CSG 切成十几个顶点后，0 号顶点扇形会拉出 45mm 长、0.05mm 宽的碎三角
+        （面积 1.1，A/最长边²≈5e-4，看着像毛边，其实形状是对的）——形心扇形不会。 */
+  function push(a, b, c) {
+    var ux = b.x - a.x, uy = b.y - a.y, uz = b.z - a.z;
+    var vx = c.x - a.x, vy = c.y - a.y, vz = c.z - a.z;
+    var nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    var cr = Math.sqrt(nx * nx + ny * ny + nz * nz), A = cr / 2;
+    if (cr < 2e-4) return;                                  // 面积 < 1e-4：退化成线，不出
+    /* 针状三角：两个顶点只差 0.002mm、第三条边却有 20mm（BSP 切出来的 needle）。
+       它面积小得像不存在，却会在面上拉出一条发丝 → 直接不要（缺口 0.002mm 看不见）。 */
+    var e1 = ux * ux + uy * uy + uz * uz, e2 = vx * vx + vy * vy + vz * vz;
+    var wx = c.x - b.x, wy = c.y - b.y, wz = c.z - b.z, e3 = wx * wx + wy * wy + wz * wz;
+    var mx2 = Math.max(e1, e2, e3);
+    if (A < 0.05 && A / mx2 < 1e-4) return;
+    out.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
+  }
   for (i = 0; i < ps.length; i++) {
-    var v = ps[i].vertices;
-    for (k = 1; k < v.length - 1; k++) {
-      var a = v[0].pos, b = v[k].pos, c = v[k + 1].pos;
-      out.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
+    var v = ps[i].vertices, n = v.length;
+    if (n === 3) { push(v[0].pos, v[1].pos, v[2].pos); continue; }
+    if (n === 4) {
+      /* 四边形：正常形状沿**较短的对角线**劈成 2 个三角（省三角数）；
+         细长四边形（A/最长边² 很小）沿哪条对角线劈都是碎三角 → 改走形心 4 片。 */
+      var a0 = v[0].pos, a1 = v[1].pos, a2 = v[2].pos, a3 = v[3].pos;
+      function dl(p, q) { var dx = p.x - q.x, dy = p.y - q.y, dz = p.z - q.z; return dx * dx + dy * dy + dz * dz; }
+      var dmax = Math.sqrt(Math.max(dl(a0, a1), dl(a1, a2), dl(a2, a3), dl(a3, a0), dl(a0, a2), dl(a1, a3)));
+      var ax = (a2.x - a0.x) * (a3.y - a1.y) - (a2.y - a0.y) * (a3.x - a1.x);
+      var ay = (a2.y - a0.y) * (a3.z - a1.z) - (a2.z - a0.z) * (a3.y - a1.y);
+      var az = (a2.z - a0.z) * (a3.x - a1.x) - (a2.x - a0.x) * (a3.z - a1.z);
+      var qA = Math.sqrt(ax * ax + ay * ay + az * az) / 2;     // 四边形面积
+      if (dmax > 1e-6 && qA / (dmax * dmax) >= 0.05) {
+        if (dl(a0, a2) <= dl(a1, a3)) { push(a0, a1, a2); push(a0, a2, a3); }
+        else { push(a1, a2, a3); push(a1, a3, a0); }
+        continue;
+      }
     }
+    var cx = 0, cy = 0, cz = 0;
+    for (k = 0; k < n; k++) { cx += v[k].pos.x; cy += v[k].pos.y; cz += v[k].pos.z; }
+    var mid = { x: cx / n, y: cy / n, z: cz / n };
+    for (k = 0; k < n; k++) push(mid, v[k].pos, v[(k + 1) % n].pos);
   }
   var g = new CL_T.BufferGeometry();
   g.setAttribute("position", new CL_T.Float32BufferAttribute(out, 3));
@@ -11483,7 +11521,7 @@ function featureSketchList(ft) {
   });
 }
 function rebuildFeatures() {
-  var solid = null, stale = 0, loopMemo = {};
+  var solid = null, stale = 0, loopMemo = {}, filletChains = [];
   /* 区域划分是 O(段数²)，同一基准面在一次重建里只算一次 */
   function planeLoopsCached(plId) {
     if (!loopMemo[plId]) loopMemo[plId] = loopsFromList(collectSketch(false, plId));
@@ -11534,17 +11572,66 @@ function rebuildFeatures() {
              切除体就留在原地，实体上等于没有圆角（用户："移动 3D 模型后圆角效果会失去"）。
              现在每次重建都先在**当前**实体上把这条棱重新找回来，再按它整链扫掠。 */
           var segList = relocateFillet(solid, ft) || ((ft.chain && ft.chain.length) ? ft.chain : [ft.seg]);
-          var exactCh = segList.length > 1;
-          for (var fk = 0; fk < segList.length; fk++) {
-            var cut = filletCutter(solid, { a: V3(segList[fk].a), b: V3(segList[fk].b) }, ft.radius, exactCh);
-            if (cut) solid = solid.subtract(cut);
+          /* v33.55 遗留①：整条平滑链做成一个扫掠切除体，一次相减（48 段整圈从 48 次相减降到 1 次）。
+             不适合扫掠的链（直棱/尖角折线/法向配对翻面）返回 null → 回退逐段。 */
+          var segV = segList.map(function (s) { return { a: V3(s.a), b: V3(s.b) }; });
+          /* v33.57 bug2：链端被先做的圆角截短 → 端段越过交汇角延长，
+             让两根圆柱面互相裁剪（不延长会留"平端帽 + 角料"的嘴唇状台阶）。
+             只延长本地副本 segV，绝不写回 segList/ft.chain（否则每次重建叠加延长）。
+             ★ segV0（未延长副本）留给 filletChains 存档 —— 角部检测和下一条棱的
+               延长判定都要用"原始"链端；存了延长版，reach 会塌成越界量，
+               角部球面就被误判成"齐角相接"而跳过（实测 prof.max 回到 6.958）。 */
+          var segV0 = segV.map(function (s) { return { a: s.a.clone(), b: s.b.clone() }; });
+          if (filletChains.length && !_noCornerCut) {
+            var ov = filletEndOvershoot(segV, filletChains);
+            if (ov) {
+              if (ov.a > 0) {
+                var dA = segV[0].a.clone().sub(segV.length > 1 ? segV[1].b : segV[0].b).normalize();
+                segV[0] = { a: segV[0].a.clone().addScaledVector(dA, ov.a), b: segV[0].b.clone() };
+              }
+              if (ov.b > 0) {
+                var li = segV.length - 1;
+                var dB = segV[li].b.clone().sub(segV.length > 1 ? segV[li - 1].a : segV[0].a).normalize();
+                segV[li] = { a: segV[li].a.clone(), b: segV[li].b.clone().addScaledVector(dB, ov.b) };
+              }
+            }
           }
+          var sweep = chainSweepCutter(solid, segV, ft.radius);
+          if (sweep) {
+            solid = solid.subtract(sweep);
+          } else {
+            var exactCh = segList.length > 1;
+            for (var fk = 0; fk < segV.length; fk++) {
+              var cut = filletCutter(solid, { a: segV[fk].a.clone(), b: segV[fk].b.clone() }, ft.radius, exactCh);
+              if (cut) solid = solid.subtract(cut);
+            }
+          }
+          /* v33.55 遗留②：把整链端点记下来，全部特征做完后统一补角部球面。
+             v33.57 bug2：存**未延长**的 segV0（理由见上）。 */
+          filletChains.push({ segs: segV0, r: Math.max(0.2, Math.min(20, ft.radius)) });
         }
       }
     } catch (e) { ft.error = e.message || "特征重建失败"; }
     if (ft.error) toast(ft.error);
   });
   if (stale > 0) toast(stale + " 个特征用的草图已被改动/删除 · 暂按快照形状");
+  /* v33.55/v33.56 遗留②：多条圆角棱在同一个顶点交汇 → 补一块角部球面（标准 corner patch）。
+     放在所有特征之后：此时三条棱的圆角圆柱面都已就位，球与它们自动相切。
+     棱链端点每轮都用当前实体重新解算，所以球面也跟着模型一起动。
+     ★ 用前做体积自检：只有真的挖掉了"角块"才接受。凹角、三张面不是同一个角、
+       切除体落在空气里（v33.55 的 bug）都会让体积几乎不变 → 直接丢掉，绝不静默切坏。 */
+  if (solid && filletChains.length > 1 && !_noCornerCut) {
+    findFilletCorners(filletChains).forEach(function (cn) {
+      try {
+        var ball = cornerBallCutter(solid, cn.pt, cn.r);
+        if (!ball) return;
+        var vb = csgVolume(ball);
+        if (!(vb > 1e-6)) return;
+        var v0 = csgVolume(solid), cut = solid.subtract(ball), d = v0 - csgVolume(cut);
+        if (d > vb * 1e-3 && d < vb * _cornerOpt.maxDelta) solid = cut;
+      } catch (e) { /* 角部是锦上添花，失败不能拖垮整次重建 */ }
+    });
+  }
   S.solid = solid;
   rebuild3D();
 }
@@ -11731,17 +11818,48 @@ function pickEdgeNearScreen(ev, maxPx) {
 /* 选中一条棱（含整链高亮）—— 点选与圆角共用 */
 function selectEdge(eg) {
   S.pickedEdge = eg;
-  clearEdgeHighlight();
-  var chainPts = [];
-  var chain = edgeChainFrom(eg);
-  chain.forEach(function (sg) { chainPts.push(sg.a, sg.b); });
-  var g = new CL_T.BufferGeometry().setFromPoints(chainPts);
-  S.hilite = new CL_T.LineSegments(g, new CL_T.LineBasicMaterial({ color: 0xe35d6a }));
-  S.scene3.add(S.hilite);
+  S.pickedEdges = [];                              // v33.57 bug1：单选清掉多选棱区
+  rebuildEdgeHighlight();
   /* v33.52：顺手展开「实体后处理」面板，圆角按钮立刻可见（以前要点开折叠区，容易以为没功能） */
   S.secOpen.post = true;
   try { syncInsp(); } catch (e) { }
-  toast("已选中棱边（" + chain.length + " 段）· 右侧「实体后处理」可设圆角 R");
+  toast("已选中棱边（" + edgeChainFrom(eg).length + " 段）· 右侧「实体后处理」可设圆角 R");
+}
+/* v33.57 bug1：多选模式下的棱边选区。
+   S.pickedEdges 存世界坐标 {a,b}（Vector3）；再次点同一条棱 = 移出。
+   高亮把选区里每条棱的**整链**都画出来（与单选 selectEdge 同一款红色）。 */
+function sameEdgeSel(e, eg) {
+  var tol = 1e-4;
+  return (e.a.distanceTo(eg.a) <= tol && e.b.distanceTo(eg.b) <= tol) ||
+         (e.a.distanceTo(eg.b) <= tol && e.b.distanceTo(eg.a) <= tol);
+}
+function rebuildEdgeHighlight() {
+  clearEdgeHighlight();
+  var src = (S.pickedEdges && S.pickedEdges.length) ? S.pickedEdges : (S.pickedEdge ? [S.pickedEdge] : []);
+  if (!src.length || !S.scene3) return;
+  var chainPts = [];
+  src.forEach(function (e) {
+    edgeChainFrom(e).forEach(function (sg) { chainPts.push(sg.a, sg.b); });
+  });
+  if (!chainPts.length) return;
+  var g = new CL_T.BufferGeometry().setFromPoints(chainPts);
+  S.hilite = new CL_T.LineSegments(g, new CL_T.LineBasicMaterial({ color: 0xe35d6a }));
+  S.scene3.add(S.hilite);
+}
+function toggleEdgeSel(eg) {
+  var idx = -1, i;
+  for (i = 0; i < S.pickedEdges.length; i++) { if (sameEdgeSel(S.pickedEdges[i], eg)) { idx = i; break; } }
+  if (idx >= 0) {
+    S.pickedEdges.splice(idx, 1);
+    rebuildEdgeHighlight();
+    toast("已从棱选区移除 · 剩 " + S.pickedEdges.length + " 条");
+    return;
+  }
+  S.pickedEdges.push({ a: eg.a.clone(), b: eg.b.clone() });
+  S.secOpen.post = true;
+  try { syncInsp(); } catch (e) { }
+  rebuildEdgeHighlight();
+  toast("已加入棱选区 · 共 " + S.pickedEdges.length + " 条 · 右侧「实体后处理」可一起设圆角 R");
 }
 function pickFaceAt(clientX, clientY) {
   if (!S.mesh) return null;
@@ -11860,6 +11978,19 @@ function edgeChainFrom(picked, segsIn) {
   for (var i = 0; i + 1 < pts.length; i++) out.push({ a: pts[i], b: pts[i + 1] });
   return out.length ? out : [{ a: picked.a.clone(), b: picked.b.clone() }];
 }
+/* v33.55：圆角剖面（局部 u-v 平面）—— 方角减去四分之一圆。
+   单段切除体（ExtrudeGeometry）与整链扫掠体（逐环摆剖面）必须用**同一套**剖面点，
+   否则同一半径在接缝处会错开一条细缝。数量 20 点：p0(-m,-m) → p1(r,-m) → 16 段弧 → (-m,r)。 */
+function filletProfile2D(r, m, arcN) {
+  var N = arcN || 16;
+  var p = [{ u: -m, v: -m }, { u: r, v: -m }];
+  for (var i = 0; i <= N; i++) {
+    var a = -Math.PI / 2 - Math.PI / 2 * i / N;
+    p.push({ u: r + r * Math.cos(a), v: r + r * Math.sin(a) });
+  }
+  p.push({ u: -m, v: r });
+  return p;
+}
 /* 圆角切除体：方角 − 四分之一圆，沿棱边扫掠 */
 function filletCutter(csg, seg, radius, exactLen) {
   var t = seg.b.clone().sub(seg.a), len = t.length();
@@ -11883,13 +12014,11 @@ function filletCutter(csg, seg, radius, exactLen) {
      与实体表面共面 → CSG 在共面处切出大量零面积/细长三角形，渲染出来就是顶点附近的毛边。
      轮廓整体外扩 m（m 只落在材料外面，相减时不影响结果）。 */
   var m = Math.max(0.12, Math.min(0.6, r * 0.08));
+  var prof = filletProfile2D(r, m);
   var shape = new CL_T.Shape();
-  shape.moveTo(-m, -m); shape.lineTo(r, -m);
-  for (var i = 0; i <= 16; i++) {
-    var a = -Math.PI / 2 - Math.PI / 2 * i / 16;
-    shape.lineTo(r + r * Math.cos(a), r + r * Math.sin(a));
-  }
-  shape.lineTo(-m, r); shape.closePath();
+  shape.moveTo(prof[0].u, prof[0].v);
+  for (var pi = 1; pi < prof.length; pi++) shape.lineTo(prof[pi].u, prof[pi].v);
+  shape.closePath();
   /* v33.54 bug1：扫掠长度收到棱的**精确长度**（旧版单段还两端各留 r，exactLen 参数因此不再需要）。
      多条棱在同一个顶点交汇时，多留的那截会和邻居的切除体互相穿插，
      既是毛边的来源，也会把顶点啃出缺口。整链本来就是按段精确长的，现在两者一致。 */
@@ -11900,6 +12029,458 @@ function filletCutter(csg, seg, radius, exactLen) {
   g.applyMatrix4(mtx);
   var c = geomToCSG(g); g.dispose();
   return c;
+}
+/* --------------------------------------------------------------------------
+ * v33.55 遗留①：整条棱链做成**一个**扫掠切除体，一次相减
+ * --------------------------------------------------------------------------
+ * 旧做法（v33.51~v33.54）逐段 ExtrudeGeometry → 逐段 subtract：48 段的整圈曲棱
+ * 就要在**越来越大的 BSP 上重算 48 次**（圆管内缘整圈 R2 实测相减 1062ms，
+ * 整次重建 ≈1.3s，真机 ≈5s）。现在：
+ *   ① 把链还原成折线点（闭合链去掉重复的末点）；
+ *   ② 每段用 faceNormalsNearCsg 取相邻两面法向 → 局部基 x=−n1、y=−n2、z=x×y；
+ *      剖面关于 u=v 对称，所以 x/y 互换不改变形状，只需把 z 摆成与前进方向同向；
+ *   ③ 每个折线顶点把前后两段的基**取平均再正交化**（样条式过渡），摆一排剖面环；
+ *   ④ 环与环之间铺三角片（四顶点不共面，必须拆成两个三角形，否则 BSP 分裂出错）；
+ *      开口链两端补剖面封盖 —— 得到一个闭合实体，一次相减。
+ * 只在「段数 ≥3 且每处转折 <30°」的**平滑链**上启用（整圈曲棱 / 圆弧棱）；
+ * 直棱（chain=1）和尖角折线仍走逐段路径（快，而且已充分回归）。
+ * 返回 null 表示"这条链不适合扫掠"，调用方回退到逐段。 */
+function chainSweepCutter(csg, segs, radius, opt) {
+  if (!csg || !segs || segs.length < 3) return null;
+  opt = opt || {};
+  var arcN = Math.max(4, opt.arc || 12), ringStep = Math.max(0, opt.ringStep || 0);
+  var n = segs.length, i, j, k;
+  var segDir = [], segLen = [], maxLen = 0;
+  for (i = 0; i < n; i++) {
+    var d = segs[i].b.clone().sub(segs[i].a), L = d.length();
+    if (L < 1e-5) return null;
+    segDir.push(d.clone().divideScalar(L)); segLen.push(L);
+    if (L > maxLen) maxLen = L;
+  }
+  /* 折线点：相邻段必须首尾相接，否则不是一条链 */
+  var tol = Math.max(1e-5, maxLen * 1e-3);
+  var pts = [segs[0].a.clone()];
+  for (i = 0; i < n; i++) {
+    if (segs[i].a.distanceTo(pts[pts.length - 1]) > tol) return null;
+    pts.push(segs[i].b.clone());
+  }
+  var closed = pts[pts.length - 1].distanceTo(pts[0]) <= tol;
+  if (closed) pts.pop();
+  var N = pts.length;
+  if (N < 3) return null;
+  /* v33.55：环间距按链的**转折角**自适应，默认每环转角不超过 16°。
+     为什么要抽稀：CT 的 BSP 没有分裂启发式（拿第一个多边形当切平面），
+     切除体平面数越多，实体的大面就被切得越碎（实测 48 环×16 段 → 结果 66k 三角形）。
+     抽稀后 48 段圆管取 24 环（每环 15°）：半径 10 的弦高 0.09mm，肉眼看不出折线，
+     而且 15° < solidEdges 的 24° 阈值 —— 圆角面上不会冒出一条条棱线。 */
+  if (!ringStep) {
+    var maxTurn = 0;
+    for (i = 1; i < n; i++) {
+      var dt = Math.max(-1, Math.min(1, segDir[i - 1].dot(segDir[i])));
+      if (Math.acos(dt) > maxTurn) maxTurn = Math.acos(dt);
+    }
+    if (closed) {
+      var dt2 = Math.max(-1, Math.min(1, segDir[n - 1].dot(segDir[0])));
+      if (Math.acos(dt2) > maxTurn) maxTurn = Math.acos(dt2);
+    }
+    ringStep = 1;
+    if (maxTurn > 1e-3) ringStep = Math.max(1, Math.floor((16 * Math.PI / 180) / maxTurn));
+    ringStep = Math.min(ringStep, Math.max(1, Math.floor(N / 8)));   // 至少 8 环
+  }
+  /* 每段相邻两面 → 局部基；z 必须与前进方向同向（否则剖面绕序反 → 实体翻面） */
+  var segX = [], segY = [];
+  for (i = 0; i < n; i++) {
+    var nr = faceNormalsNearCsg(csg, segs[i]);
+    if (nr.length < 2) return null;
+    if (nr[0].dot(nr[1]) > 0.98) return null;
+    var x = nr[0].negate(), y = nr[1].negate();
+    if (x.clone().cross(y).dot(segDir[i]) < 0) { var swap = x; x = y; y = swap; }
+    x.normalize(); y.normalize();
+    segX.push(x); segY.push(y);
+  }
+  /* 每个顶点一帧：前后两段的基取平均 → 去掉切向分量 → 正交化 */
+  var all = [];
+  for (j = 0; j < N; j++) {
+    var iIn = closed ? (j - 1 + n) % n : j - 1;
+    var iOut = closed ? j % n : j;
+    var hasIn = (iIn >= 0 && iIn < n), hasOut = (iOut >= 0 && iOut < n);
+    if (!hasIn && !hasOut) return null;
+    var t = (hasIn ? segDir[iIn] : segDir[iOut]).clone();
+    if (hasIn && hasOut) t.add(segDir[iOut]);
+    if (t.lengthSq() < 1e-12) return null;
+    t.normalize();
+    var rx = (hasIn ? segX[iIn] : segX[iOut]).clone();
+    var ry = (hasIn ? segY[iIn] : segY[iOut]).clone();
+    if (hasIn && hasOut) { rx.add(segX[iOut]); ry.add(segY[iOut]); }
+    rx.addScaledVector(t, -rx.dot(t));
+    if (rx.lengthSq() < 1e-8) return null;
+    rx.normalize();
+    ry.addScaledVector(t, -ry.dot(t));
+    ry.addScaledVector(rx, -ry.dot(rx));          // 再正交化一次（Gram-Schmidt）
+    if (ry.lengthSq() < 1e-8) return null;
+    ry.normalize();
+    /* 相邻帧必须连续，否则说明法向配对在中途翻了 —— 别硬扫，回退逐段 */
+    if (all.length && rx.dot(all[all.length - 1].x) < 0.5) return null;
+    if (rx.clone().cross(ry).dot(t) < 0) { var sw2 = rx; rx = ry; ry = sw2; }
+    all.push({ p: pts[j], x: rx, y: ry });
+  }
+  /* ringStep>1：隔几个顶点取一环（环越少，CSG 平面越少 → 分裂越少、越快；
+     圆管 48 段取 4 → 12 环，半径 10 的弦高只有 0.9mm，圆角上看不出折线） */
+  var rings = all;
+  if (ringStep > 1) {
+    rings = [];
+    for (j = 0; j < N; j++) {
+      if (j % ringStep !== 0) continue;
+      rings.push(all[j]);
+    }
+    if (!closed && rings[rings.length - 1] !== all[N - 1]) rings.push(all[N - 1]);
+    if (rings.length < (closed ? 3 : 2)) rings = all;
+  }
+  var M = rings.length;
+  var r = Math.max(0.2, Math.min(20, radius));
+  var m = Math.max(0.12, Math.min(0.6, r * 0.08));
+  var prof = filletProfile2D(r, m, arcN), K = prof.length;
+  function ringPt(a, b) {
+    return rings[a].p.clone().addScaledVector(rings[a].x, prof[b].u).addScaledVector(rings[a].y, prof[b].v);
+  }
+  var P = [];
+  var lastRing = closed ? M : M - 1;
+  for (j = 0; j < lastRing; j++) {
+    var j2 = (j + 1) % M;
+    for (k = 0; k < K; k++) {
+      var k2 = (k + 1) % K;
+      var a0 = ringPt(j, k), a1 = ringPt(j, k2), b1 = ringPt(j2, k2), b0 = ringPt(j2, k);
+      P.push(mkPoly([a0, a1, b1]));
+      P.push(mkPoly([a0, b1, b0]));
+    }
+  }
+  if (!closed) {
+    var capA = [], capB = [];
+    for (k = 0; k < K; k++) { capA.push(ringPt(0, K - 1 - k)); capB.push(ringPt(M - 1, k)); }
+    P.push(mkPoly(capA)); P.push(mkPoly(capB));   // 反向给 -z、正向给 +z
+  }
+  return P.length ? CL_CSG.fromPolygons(P) : null;
+}
+/* --------------------------------------------------------------------------
+ * v33.55 遗留②：三条（及更多）圆角棱交汇的顶点补球面过渡
+ * --------------------------------------------------------------------------
+ * 三条圆柱面各自停在该顶点，交汇处留一个小尖角（用户："三条棱交汇的顶点会留一个小尖角"）。
+ * 标准 CAD 的角部：挖掉「角上小立方体 − 半径 r 的内切球」——
+ * 球心离三个面各 r，球与三个平面相切、与三条圆角圆柱面也相切，
+ * 顶点的小尖角就变成一块球面三角片（直径两端的切点正好接上圆柱面）。
+ * 面从实体上就近取（顶点附近的多边形平面），要求三个面两两近似正交（凸角），
+ * 且角内那一点确实在材料里（否则是凹角/退化，直接跳过）。返回 null = 不加。 */
+function vecDist2(p, x, y, z) { var a = p.x - x, b = p.y - y, c = p.z - z; return a * a + b * b + c * c; }
+function cornerPlanesNear(csg, pt, rad) {
+  var out = [], r2 = rad * rad;
+  csg.toPolygons().forEach(function (pg) {
+    var vs = pg.vertices, near = false;
+    for (var i = 0; i < vs.length; i++) { if (vecDist2(vs[i].pos, pt.x, pt.y, pt.z) <= r2) { near = true; break; } }
+    if (!near) return;
+    var pn = pg.plane.normal;
+    for (var k = 0; k < out.length; k++) {
+      if (out[k].n.dot(pn) > 0.995) return;      // 同一张面（法向 + w 一致）
+    }
+    out.push({ n: new CL_T.Vector3(pn.x, pn.y, pn.z), w: pg.plane.w });
+  });
+  return out;
+}
+/* 凸角判据：沿 -（n1+n2+n3）走进材料，那个点必须真的在实体内部。
+   用射线穿面奇偶法（CSG 没有 point-in-solid，但奇偶法对闭合实体是准确的）。
+   ★ 射线方向不能取「对角 (1,1,1)」这类方向：盒子的面正好以它为对角线，
+     射线会精确穿过三角形棱边 → 交点被判到面外（实测盒心都判成"外面"）。
+     取一个与任何轴/面对角线都不对齐的方向。 */
+var _rayDir = { x: 0.3713907, y: 0.5570860, z: 0.7427814 };   // normalize(1, 1.5, 2)
+function csgContainsPoint(csg, p) {
+  var dx = _rayDir.x, dy = _rayDir.y, dz = _rayDir.z;
+  var hit = 0;
+  csg.toPolygons().forEach(function (pg) {
+    var vs = pg.vertices;
+    for (var i = 1; i + 1 < vs.length; i++) {
+      var a = vs[0].pos, b = vs[i].pos, c = vs[i + 1].pos;
+      var e1x = b.x - a.x, e1y = b.y - a.y, e1z = b.z - a.z;
+      var e2x = c.x - a.x, e2y = c.y - a.y, e2z = c.z - a.z;
+      var px = dy * e2z - dz * e2y, py = dz * e2x - dx * e2z, pz = dx * e2y - dy * e2x;
+      var det = e1x * px + e1y * py + e1z * pz;
+      if (det > -1e-9 && det < 1e-9) continue;
+      var inv = 1 / det;
+      var tx = p.x - a.x, ty = p.y - a.y, tz = p.z - a.z;
+      var u = (tx * px + ty * py + tz * pz) * inv;
+      if (u < -1e-9 || u > 1 + 1e-9) continue;
+      var qx = ty * e1z - tz * e1y, qy = tz * e1x - tx * e1z, qz = tx * e1y - ty * e1x;
+      var v = (dx * qx + dy * qy + dz * qz) * inv;
+      if (v < -1e-9 || u + v > 1 + 1e-9) continue;
+      if ((e2x * qx + e2y * qy + e2z * qz) * inv > 1e-6) hit++;
+    }
+  });
+  return (hit % 2) === 1;
+}
+/* v33.56：三条圆角棱交汇的顶点补球面过渡（标准 CAD 的 corner patch）
+   --------------------------------------------------------------------------
+   几何：以角点为原点、三条**面内法向** u0/u1/u2 为轴，取边长 r 的立方；
+        再挖掉「球心 cc = 角点 + r(u0+u1+u2)、半径 = r」的球。
+        剩下的正是那个没倒圆的角块：三个楔形沿三条棱收拢到角点。
+   为什么这样就对：这块球同时满足两件事 ——
+     ① 与三个平面内切（切点距角点 r，正是球面三角的三个顶点）；
+     ② 与三根圆角圆柱面**同半径、球心落在圆柱轴上** → 沿大圆相切（C1 连续）。
+   切掉角块后，角部表面就是一块球面三角，三条边界与三根圆柱面切向接上，就是 SolidWorks 的效果。
+   ★ v33.55 的写法错在哪（写下来免得重走）：写成了 (盒∖球) ∩ 三根圆柱，而且凸角判据用
+     csgContainsPoint（射线穿面奇偶）。两个都错：
+       · 三根圆柱的"材料侧"在圆柱**内**，而 盒∖球 已经把球内挖掉了 —— 交集几乎为空，
+         实际只在空气里切出 +1000 个碎三角（用户截图角部那一圈毛刺/小鼓包就是它）；
+       · CSG 输出的同一平面上有重复面，射线奇偶判据会随机判错 —— 实测这个场景直接
+         return null，角部球从头到尾没生效（所以"做了角部"和"没做"两张渲染图一模一样）。
+     现在的判据换成"挖完体积掉了多少"（见 rebuildFeatures）：几何自己说话，不再赌点内测试。 */
+var _cornerOpt = { sphN: 24, boxm: 0.12, maxDelta: 1.4 };
+/* sphN 上限 24：n=32 起 BSP 递归爆栈（"Maximum call stack size exceeded"），
+   异常被 catch 吞掉 → 角部静默不切。n=16 也可用（剖面 min 4.981），24 球面更圆（min 4.994）。 */
+var _noCornerCut = false;                       // 回归/对比用开关：不走角部球面
+/* CSG 有符号体积（散度定理，三角扇形展开非平面多边形） */
+function csgVolume(csg) {
+  var v = 0;
+  if (!csg) return 0;
+  csg.toPolygons().forEach(function (pg) {
+    var vs = pg.vertices, a = vs[0].pos;
+    for (var i = 1; i + 1 < vs.length; i++) {
+      var b = vs[i].pos, c = vs[i + 1].pos;
+      v += (a.x * (b.y * c.z - b.z * c.y) - a.y * (b.x * c.z - b.z * c.x) + a.z * (b.x * c.y - b.y * c.x)) / 6;
+    }
+  });
+  return Math.abs(v);
+}
+/* 三平面交点：n_i·x = w_i（Cramer）。三个法向近似正交，行列式足够大。 */
+function planeTriplePoint(t) {
+  var n0 = t[0].n, n1 = t[1].n, n2 = t[2].n;
+  var c12 = n1.clone().cross(n2), det = n0.dot(c12);
+  if (Math.abs(det) < 1e-6) return null;
+  var c20 = n2.clone().cross(n0), c01 = n0.clone().cross(n1);
+  return new CL_T.Vector3(0, 0, 0)
+    .addScaledVector(c12, t[0].w)
+    .addScaledVector(c20, t[1].w)
+    .addScaledVector(c01, t[2].w)
+    .divideScalar(det);
+}
+/* 自铺球面：八面体细分，六个"极点"正好落在 ±u0/±u1/±u2 上。
+   ★ 为什么不用经纬球：角部球与三个面**相切**，切点方向正好是 −u_i。经纬球无论极轴
+     怎么摆，切点附近总会有一圈小平面几乎平行于该面（内接多面体与球面差一个矢高，
+     16 段时 ≈0.027mm），BSP 用这些平面去切 50×50 的大面，就拉出 45mm 长、
+     0.002mm 宽的碎三角。八面体细分把切点做成**顶点**，切点四周的面片至少倾斜
+     90°/n（n=4 → 22°），再也不会与面近平行。
+   每个三角形按"背离球心"校正绕序，与 u0/u1/u2 的手性无关。 */
+function octaBallPolys(cc, rad, ax, ay, az, n) {
+  var P = [];
+  var memo = {};
+  function pt(i, j, k) {
+    var key = i + "," + j + "," + k;
+    if (memo[key]) return memo[key];
+    var w = ax.clone().multiplyScalar(i).addScaledVector(ay, j).addScaledVector(az, k).normalize();
+    var p = cc.clone().addScaledVector(w, rad);
+    memo[key] = p;
+    return p;
+  }
+  function tri(A, B, C) {
+    var nrm = B.clone().sub(A).cross(C.clone().sub(A));
+    if (nrm.dot(A.clone().sub(cc)) < 0) P.push(mkPoly([A, C, B]));
+    else P.push(mkPoly([A, B, C]));
+  }
+  for (var sx = -1; sx <= 1; sx += 2)
+    for (var sy = -1; sy <= 1; sy += 2)
+      for (var sz = -1; sz <= 1; sz += 2)
+        for (var i = 0; i < n; i++)
+          for (var j = 0; i + j < n; j++) {
+            var k = n - i - j;
+            var A = pt(sx * i, sy * j, sz * k), B = pt(sx * (i + 1), sy * j, sz * (k - 1)),
+              C = pt(sx * i, sy * (j + 1), sz * (k - 1));
+            tri(A, B, C);
+            if (k > 1) {
+              var D = pt(sx * (i + 1), sy * (j + 1), sz * (k - 2));
+              tri(B, D, C);
+            }
+          }
+  return P;
+}
+function cornerBallCutter(csg, pt, r) {
+  var pts = cornerPlanesNear(csg, pt, Math.max(r * 2.6, r + 2));
+  if (pts.length < 3) return null;
+  /* 挑三个两两近似垂直的面（盒角就是三张；圆柱棱端头会有近似同向的碎面，跳过） */
+  var tri = null;
+  for (var a = 0; a < pts.length && !tri; a++)
+    for (var b = a + 1; b < pts.length && !tri; b++) {
+      if (Math.abs(pts[a].n.dot(pts[b].n)) > 0.25) continue;
+      for (var c = b + 1; c < pts.length; c++) {
+        if (Math.abs(pts[a].n.dot(pts[c].n)) > 0.25) continue;
+        if (Math.abs(pts[b].n.dot(pts[c].n)) > 0.25) continue;
+        tri = [pts[a], pts[b], pts[c]]; break;
+      }
+    }
+  if (!tri) return null;
+  /* 角点用**三平面交点**解出来：pt 是两条棱链延长线的最近点平均，有 0.1mm 级误差，
+     而球心是"角点沿三个面内法向各走 r"，误差会整份传进球面（球面片就偏了）。 */
+  var corner = planeTriplePoint(tri);
+  if (!corner) return null;
+  if (corner.distanceTo(pt) > Math.max(0.6, r * 0.35)) return null;   // 三张面不是同一个角
+  var u0 = tri[0].n.clone().negate(), u1 = tri[1].n.clone().negate(), u2 = tri[2].n.clone().negate();
+  if (u0.clone().cross(u1).dot(u2) < 0) { var sw = u1; u1 = u2; u2 = sw; }
+  u0.normalize(); u1.normalize(); u2.normalize();
+  var O = _cornerOpt, rad = r;
+  /* 球面与三根圆柱面**精确相切**（同半径 + 球心在轴上）。曾经担心相切在 BSP 里是
+     "两曲面重合"必退化，试过把球放大 lift=1.002 让它横截 —— 实测反而更糟：
+     球与圆柱面以 √(2·0.002)≈3.6° 的**浅角**斜交，交界曲线附近拉出 40+ 条细长三角
+     （渲染出来正是角部那圈虚线毛刺）。扫 lift 1.001→1.04 全都 11~46 条 sliver。
+     而精确相切 + sphN=16 实测 sliver=0：相切退化只发生在"面片与切面近平行"时，
+     八面体细分球把切点做成了**顶点**（周边面片倾斜 90°/n ≥5.6°），BSP 不退化。
+     lift 保留为救急旋钮（默认 1 = 不放大；1.02 会在放大视角下露出 0.1mm 台阶）。 */
+  var lift = Math.max(1, Math.min(1.05, O.lift || 1));
+  if (lift !== 1) rad = r * lift;
+  /* 球心 = 角部内切球球心（沿三个面法向内缩 r）：与三个平面内切，
+     又因为落在三根圆角圆柱的轴上且同半径，与三根圆柱面沿大圆相切。 */
+  var cc = corner.clone().addScaledVector(u0, rad).addScaledVector(u1, rad).addScaledVector(u2, rad);
+  var m = Math.max(0.15, Math.min(1.2, r * O.boxm));  // 往材料外多伸一点，避免与实体表面共面
+  var hi = rad;                                 // 盒的远端正好在 cc 的三个坐标面上（球的大圆就在那里）
+  /* ① 局部盒（以**精确角点**为原点、u0/u1/u2 为轴，范围 [−m, r]）。
+     盒内材料本来就只有"没倒圆的角块"，所以盒 ∖ 球 减掉的正是它，不会碰别的材料。
+     绕序照抄 CSG.cube 的面表（(u0,u1,u2) 已右手化，逐位映射后法向自动朝外）。 */
+  function LP(a, b, c) { return corner.clone().addScaledVector(u0, a).addScaledVector(u1, b).addScaledVector(u2, c); }
+  var V = [], dx2, dy2, dz2;
+  for (dz2 = 0; dz2 < 2; dz2++)
+    for (dy2 = 0; dy2 < 2; dy2++)
+      for (dx2 = 0; dx2 < 2; dx2++)
+        V.push(LP(dx2 ? hi : -m, dy2 ? hi : -m, dz2 ? hi : -m));
+  var boxP = [
+    [0, 4, 6, 2], [1, 3, 7, 5], [0, 1, 5, 4], [2, 6, 7, 3], [0, 2, 3, 1], [4, 5, 7, 6]
+  ].map(function (idx) {
+    return mkPoly(idx.map(function (i) { return V[i]; }));
+  });
+  var box = CL_CSG.fromPolygons(boxP);
+  /* ② 盒 ∖ 球。球必须正好半径 r：偏小 → 球面片接不上圆柱面（留台阶），
+        偏大 → 球面片凸出圆柱面（留一圈月牙，v33.55 的 1.02r 就是用户截图里的台阶）。
+     ★ 不能用 CL_CSG.sphere：它极轴固定世界 ±y，极点会压在球面三角的顶点（正是与面内切的
+       切点）上，那一圈小平面几乎与实体大面共面 → BSP 一次拉出 45mm 碎三角。
+       八面体细分球的六个极点正好落在 ±u0/±u1/±u2，切点周围的面片倾斜 90°/n，永远不会近平行。 */
+  var ball = CL_CSG.fromPolygons(octaBallPolys(cc, rad, u0, u1, u2, O.sphN));
+  return box.subtract(ball);
+}
+/* 两条（无限长）直线的最近点对；平行/近亲时返回 null。
+   s/t 是沿各自方向的行进量（可正可负）。 */
+function closestOnLines(p1, d1, p2, d2, out) {
+  var b = d1.dot(d2);
+  var den = 1 - b * b;
+  if (den < 1e-4) return null;                    // 近似平行：不是拐角
+  var r = p1.clone().sub(p2);
+  var d = d1.dot(r), e = d2.dot(r);
+  var s = (b * e - d) / den, t = (e - b * d) / den;
+  out.s = s; out.t = t;
+  out.a = p1.clone().addScaledVector(d1, s);
+  out.b = p2.clone().addScaledVector(d2, t);
+  return out;
+}
+/* v33.55 遗留②：从已解算的圆角棱链里找出"多条棱交汇的顶点"。
+   ★ 端点**不是**角点：圆角 A 切过之后，相邻的棱 B 被裁短了 r，B 的链端点落在
+   (r,0,25) 而不是角点 (0,0,25)。所以不能只比端点距离，要把两条棱**延长**求最近点：
+   最近点几乎重合、且两侧延长量都在 [−0.2r, 2.5r] 内，才算同一个角。 */
+function findFilletCorners(chains) {
+  var ends = [];
+  chains.forEach(function (ch, ci) {
+    var s = ch.segs;
+    if (!s || s.length < 1) return;
+    var p0 = s[0].a, pN = s[s.length - 1].b;
+    var span = 0;
+    s.forEach(function (q) { span += q.a.distanceTo(q.b); });
+    if (p0.distanceTo(pN) <= Math.max(1e-4, span * 1e-3)) return;   // 闭合链没有端点
+    var d0 = (s.length > 1 ? s[0].a.clone().sub(s[1].b) : s[0].a.clone().sub(s[0].b));
+    var dN = (s.length > 1 ? s[s.length - 1].b.clone().sub(s[s.length - 2].a) : s[0].b.clone().sub(s[0].a));
+    if (d0.lengthSq() > 1e-12) ends.push({ p: p0.clone(), d: d0.normalize(), r: ch.r, ci: ci });
+    if (dN.lengthSq() > 1e-12) ends.push({ p: pN.clone(), d: dN.normalize(), r: ch.r, ci: ci });
+  });
+  var out = [], tmp = {};
+  for (var i = 0; i < ends.length; i++) {
+    for (var j = i + 1; j < ends.length; j++) {
+      if (ends[i].ci === ends[j].ci) continue;                       // 同一条链的两头不是角
+      var r = Math.min(ends[i].r, ends[j].r);
+      if (ends[i].p.distanceTo(ends[j].p) > r * 4 + 2) continue;      // 太远，先排除
+      if (!closestOnLines(ends[i].p, ends[i].d, ends[j].p, ends[j].d, tmp)) continue;
+      if (tmp.s < -0.3 * r || tmp.s > 2.6 * r) continue;
+      if (tmp.t < -0.3 * r || tmp.t > 2.6 * r) continue;
+      if (tmp.a.distanceTo(tmp.b) > Math.max(0.4, r * 0.1)) continue; // 两条延长线要真的相交
+      var c = tmp.a.clone().add(tmp.b).multiplyScalar(0.5);
+      var dup = null;
+      out.forEach(function (u) { if (u.pt.distanceTo(c) < 0.5) dup = u; });
+      if (dup) {
+        dup.r = Math.min(dup.r, r); dup.hits++;
+        if (dup.cis.indexOf(ends[j].ci) < 0) dup.cis.push(ends[j].ci);
+        if (dup.rs.indexOf(ends[j].r) < 0) dup.rs.push(ends[j].r);
+        dup.reach = Math.max(dup.reach, Math.abs(tmp.s), Math.abs(tmp.t));
+      }
+      else out.push({ pt: c, r: r, hits: 1, cis: [ends[i].ci, ends[j].ci],
+        rs: [ends[i].r, ends[j].r],
+        /* reach = 参与端到角点的最大延长量：≈0 说明两端都齐着角（flush），
+           ≈r 说明至少一条链端被先做的圆角**截短**了（v33.57 bug2 的交汇角） */
+        reach: Math.max(Math.abs(tmp.s), Math.abs(tmp.t)) });
+    }
+  }
+  /* ★ 三条圆角棱交汇必补（v33.55 起）。
+     ★ 两条圆角棱交汇的角（v33.57 bug2）：后做的那条链端被先做的圆角截短，
+        角上留着"先做圆角的平端帽 + 没切到的角料" → 也补球面。
+        前提：① 两条半径一致（球心必须同时落在两根圆柱轴上、与两根圆柱面沿
+        大圆相切；半径不同时球无法同时相切，留尖角不挖，交给越界延长兜底）；
+        ② reach > r/2 —— 只挖"被截短的交汇角"。两条棱只是**齐角相接**（flush，
+        第三条棱还尖着）的角不挖：那是 v33.55 实测过会切到第三条棱真材料的情况。 */
+  return out.filter(function (u) {
+    if (u.cis.length >= 3) return true;
+    if (u.cis.length !== 2 || !u.rs || u.rs.length > 2) return false;
+    var rMax = Math.max.apply(null, u.rs), rMin = Math.min.apply(null, u.rs);
+    if (rMax - rMin > 0.02 * rMax) return false;
+    return u.reach > 0.5 * rMin;
+  });
+}
+/* v33.57 bug2：链端被先做的圆角截短时，把端段沿自身方向**延长越过交汇角**。
+   为什么：先做的圆角把后一条棱的链端裁短了 r，后一条的扫掠在截短处留下
+   "平端帽 + 没切到的角料"，渲染出来就是嘴角上的嘴唇状台阶（用户截图1）。
+   把端段延长到角点再越过一点点，两根圆柱面就会**互相裁剪**（SolidWorks 的做法），
+   角部再由 cornerBallCutter 的球面收口。延长只对"参与交汇角的端"生效
+   （closestOnLines 延长线相交判定）；越过的部分落在另一根圆柱已切掉的区域内
+   或材料外，相减无害。返回 { a: 首端延长量, b: 末端延长量 }（0 = 不延长）。 */
+function filletEndOvershoot(segV, prevChains) {
+  var n = segV.length;
+  if (!n) return null;
+  var p0 = segV[0].a, pN = segV[n - 1].b;
+  var span = 0;
+  segV.forEach(function (q) { span += q.a.distanceTo(q.b); });
+  if (p0.distanceTo(pN) <= Math.max(1e-4, span * 1e-3)) return null;   // 闭合链没有端点
+  var d0 = (n > 1 ? p0.clone().sub(segV[1].b) : p0.clone().sub(segV[0].b));
+  var dN = (n > 1 ? pN.clone().sub(segV[n - 2].a) : pN.clone().sub(segV[0].a));
+  if (d0.lengthSq() < 1e-12 || dN.lengthSq() < 1e-12) return null;
+  d0.normalize(); dN.normalize();
+  var out = { a: 0, b: 0 }, tmp = {};
+  function tryEnd(p, d, otherP, otherD, otherR, key) {
+    if (!closestOnLines(p, d, otherP, otherD, tmp)) return;
+    if (tmp.a.distanceTo(tmp.b) > Math.max(0.4, 0.1 * Math.max(1, otherR))) return;
+    if (tmp.t < -0.3 * otherR || tmp.t > 2.6 * otherR) return;   // 对面端点也得够得着这个角
+    var s = tmp.s;
+    if (s <= 0.05 * Math.max(1, otherR) || s > 3 * otherR + 2) return;   // 端点齐着角（没截短）或太远
+    var ext = s + Math.max(0.2, 0.06 * otherR);
+    if (ext > out[key]) out[key] = ext;
+  }
+  prevChains.forEach(function (ch) {
+    var ss = ch.segs;
+    if (!ss || !ss.length) return;
+    var m = ss.length, q0 = ss[0].a, qN = ss[m - 1].b;
+    var sp2 = 0; ss.forEach(function (q) { sp2 += q.a.distanceTo(q.b); });
+    if (q0.distanceTo(qN) <= Math.max(1e-4, sp2 * 1e-3)) return;   // 对方是闭合链（整圈），没有端点
+    var e0 = (m > 1 ? q0.clone().sub(ss[1].b) : q0.clone().sub(ss[0].b));
+    var eN = (m > 1 ? qN.clone().sub(ss[m - 2].a) : qN.clone().sub(ss[0].a));
+    if (e0.lengthSq() > 1e-12) {
+      e0.normalize();
+      tryEnd(p0, d0, q0, e0, ch.r, "a");
+      tryEnd(pN, dN, q0, e0, ch.r, "b");
+    }
+    if (eN.lengthSq() > 1e-12) {
+      eN.normalize();
+      tryEnd(p0, d0, qN, eN, ch.r, "a");
+      tryEnd(pN, dN, qN, eN, ch.r, "b");
+    }
+  });
+  return (out.a > 0 || out.b > 0) ? out : null;
 }
 /* v33.54 bug2：把保存的"圆角棱段"重新对到**当前**实体的棱上。
    为什么需要：特征里存的是拾取那一刻的世界坐标（[x,y,z] 数组），而草图被拖动/改尺寸后
@@ -11976,28 +12557,36 @@ function relocateFillet(solid, ft) {
   return chain.map(function (s) { return { a: [s.a.x, s.a.y, s.a.z], b: [s.b.x, s.b.y, s.b.z] }; });
 }
 function fillet(radius) {
-  if (!S.solid || !S.pickedEdge) { toast("请先用「选择」工具点一条棱边"); return; }
   var r = Math.max(0.2, Math.min(20, num(radius, 2)));
-  /* v33.51 bug4：整条棱链（曲线棱 = 整圈折线）逐段做圆角，而不是只处理拾取的那一段 */
-  var chain = edgeChainFrom(S.pickedEdge);
-  var segsOk = [];
-  var exact = chain.length > 1;          // 整链：每段按精确长度扫，避免相邻段重叠多啃
-  chain.forEach(function (sg) {
-    if (filletCutter(S.solid, { a: sg.a.clone(), b: sg.b.clone() }, r, exact)) {
-      segsOk.push({ a: [sg.a.x, sg.a.y, sg.a.z], b: [sg.b.x, sg.b.y, sg.b.z] });
-    }
+  /* v33.57 bug1：多选棱一起圆角 —— 每条链各推一个 fillet 特征
+     （各自 relocateFillet 跟随草图联动），角部交汇由 rebuildFeatures 统一补面。 */
+  var edges = (S.pickedEdges && S.pickedEdges.length) ? S.pickedEdges : (S.pickedEdge ? [S.pickedEdge] : []);
+  if (!S.solid || !edges.length) { toast("请先用「选择」工具点一条棱边（开「多选」可点多条一起圆角）"); return; }
+  var pre = captureState();
+  var pushed = 0, segsTotal = 0;
+  edges.forEach(function (pe) {
+    /* v33.51 bug4：整条棱链（曲线棱 = 整圈折线）逐段做圆角，而不是只处理拾取的那一段 */
+    var chain = edgeChainFrom(pe);
+    var segsOk = [];
+    var exact = chain.length > 1;          // 整链：每段按精确长度扫，避免相邻段重叠多啃
+    chain.forEach(function (sg) {
+      if (filletCutter(S.solid, { a: sg.a.clone(), b: sg.b.clone() }, r, exact)) {
+        segsOk.push({ a: [sg.a.x, sg.a.y, sg.a.z], b: [sg.b.x, sg.b.y, sg.b.z] });
+      }
+    });
+    if (!segsOk.length) return;
+    /* v33.54 bug2：记下实体此刻的包围盒中心当锚点，重建时用它把棱段一起搬走 */
+    S.features.push({ t: "fillet", radius: r, seg: segsOk[0], chain: segsOk, anchor: csgCenter(S.solid) });
+    pushed++; segsTotal += segsOk.length;
   });
-  if (!segsOk.length) {
+  if (!pushed) {
     toast("该棱边无法识别相邻两面（可换一条直棱）");
     return;
   }
-  /* v33.54 bug2：记下实体此刻的包围盒中心当锚点，重建时用它把棱段一起搬走 */
-  var pre = captureState();
-  S.features.push({ t: "fillet", radius: r, seg: segsOk[0], chain: segsOk, anchor: csgCenter(S.solid) });
-  S.pickedEdge = null; clearEdgeHighlight();
+  S.pickedEdge = null; S.pickedEdges = []; clearEdgeHighlight();
   rebuildFeatures();
   pushState(pre);
-  toast("已生成 R" + r + " 圆角（" + segsOk.length + " 段棱）· 随草图联动");
+  toast("已生成 R" + r + " 圆角（" + pushed + " 条棱 / " + segsTotal + " 段）· 随草图联动");
 }
 function holeCSGOn(pl, cfg) {
   var start = toWorldOn(pl, cfg.x, cfg.y, -cfg.depth - 1);
@@ -12042,9 +12631,16 @@ function resizeView() {
      映射到宽>高（或高>宽）的画布上比例不一致，草图正方形会显示成长方形。
      这里无论有没有实体，都按画布纵横比校正视锥（保持半高不变）。 */
   var a = Math.max(0.4, r.width / Math.max(1, r.height));
-  var half = (S.cam3.top - S.cam3.bottom) / 2 / Math.max(0.05, S.cam3.zoom || 1);
-  S.cam3.left = -half * a; S.cam3.right = half * a;
-  S.cam3.top = half; S.cam3.bottom = -half;
+  /* v33.57 bug3：撤销/选中后视角大幅异常变化。旧公式把 top/bottom 当作「未含缩放的基准」
+     再除一次 zoom —— 但 OrbitControls 的缩放只改 zoom、不改 top/bottom，
+     于是 zoom≠1 时每跑一次 refreshAll→resizeView，视锥就再缩 1/zoom（指数级：
+     实测 zoom=2.4 连续撤销，半高 36 → 15 → 2.6 → 0.45，画面猛地放大/缩小）。
+     正确做法：保住**可见**半高（=(top-bottom)/2/zoom），按新纵横比重铺视锥，
+     即 top = 可见半高 × zoom —— zoom=1 时与旧结果完全一致。 */
+  var z = Math.max(0.05, S.cam3.zoom || 1);
+  var visHalf = (S.cam3.top - S.cam3.bottom) / 2 / z;
+  S.cam3.left = -visHalf * a * z; S.cam3.right = visHalf * a * z;
+  S.cam3.top = visHalf * z; S.cam3.bottom = -visHalf * z;
   S.cam3.updateProjectionMatrix();
   /* v33.46：不再在每次 resize 后 fit3D —— 那会把视角拽回模型中心（键盘弹出/面板收起都会触发） */
 }
@@ -12123,7 +12719,7 @@ function rebuild3D() {
   var hadSolid = !!S.solid && !!S.mesh;   // v33.46：只有第一次出实体时才自动取景
   if (S.mesh) { S.scene3.remove(S.mesh); S.mesh.geometry.dispose(); S.mesh.material.dispose(); S.mesh = null; }
   if (S.edges) { S.scene3.remove(S.edges); S.edges.geometry.dispose(); S.edges.material.dispose(); S.edges = null; }
-  clearEdgeHighlight(); S.pickedEdge = null;
+  clearEdgeHighlight(); S.pickedEdge = null; S.pickedEdges = [];
   S.snapSegs = null; S.edgeVersion = (S.edgeVersion || 0) + 1;   // 模型变了，轮廓吸附缓存作废
   if (!S.solid) { refreshAll(); return; }
   var g = csgGeom(S.solid);
@@ -12375,7 +12971,7 @@ function syncGridChip() {
   b.textContent = S.grid ? "网格 开" : "网格 关";
 }
 function doClear() {
-  S.entities = []; S.features = []; S.solid = null; S.pickedEdge = null;
+  S.entities = []; S.features = []; S.solid = null; S.pickedEdge = null; S.pickedEdges = [];
   S.planes = basePlanes(); S.planeId = "front";
   S.history.length = 0; S.future.length = 0;
   cancelDraw();

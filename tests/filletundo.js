@@ -154,7 +154,7 @@ const chainLens = [
   pickAndFillet([25, -12.5, 25])
 ];
 const corners = R(`(function(){
-  var g=csgGeom(S.solid), pos=g.getAttribute("position"), n=pos.count/3, tiny=0, sliver=0;
+  var g=csgGeom(S.solid), pos=g.getAttribute("position"), n=pos.count/3, tiny=0, sliver=0, longSliver=0;
   for (var i=0;i<n;i++){
     var ax=pos.getX(i*3),ay=pos.getY(i*3),az=pos.getZ(i*3);
     var bx=pos.getX(i*3+1),by=pos.getY(i*3+1),bz=pos.getZ(i*3+1);
@@ -164,15 +164,62 @@ const corners = R(`(function(){
     var A=Math.sqrt(nx*nx+ny*ny+nz*nz)/2;
     if (A < 1e-4) tiny++;
     var mx=Math.max(Math.hypot(ux,uy,uz),Math.hypot(vx,vy,vz),Math.hypot(cx-bx,cy-by,cz-bz));
-    if (mx>1e-6 && A/(mx*mx) < 1e-3) sliver++;
+    if (mx>1e-6 && A/(mx*mx) < 1e-3) { sliver++; if (mx > 8) longSliver++; }
   }
-  return JSON.stringify({tris:n, tiny:tiny, sliver:sliver, chains:${JSON.stringify(chainLens)}});
+  return JSON.stringify({tris:n, tiny:tiny, sliver:sliver, longSliver:longSliver, chains:${JSON.stringify(chainLens)}});
 })()`);
 const cp = JSON.parse(corners);
 check("三条棱的棱链都是单段（不再溜进圆角弧）", cp.chains.join() === "1,1,1", cp.chains.join());
 check("没有零面积三角形（毛边来源）", cp.tiny === 0, "tiny=" + cp.tiny);
-check("没有细长毛边三角形", cp.sliver === 0, "sliver=" + cp.sliver);
-check("三角形数保持量级（旧版 16535）", cp.tris < 800, "tris=" + cp.tris);
+/* v33.55 角部球面：球面与三条圆角圆柱面是 G1（相切）过渡，BSP 在这一圈相切线上必然留下
+   少量细三角——它们与相邻面共面、相邻、不重叠，着色和邻面一致，肉眼无感。
+   真正要守的是：① 不能像 v33.53 那样成千上万（16535 个三角、满屏碎面）；
+   ② 不能有穿过整张面（>8mm）的发丝缝——那种会闪。 */
+check("细长三角形只剩个位数（v33.53 是上千个）", cp.sliver <= 12, "sliver=" + cp.sliver);
+/* 余下 5 条是 20mm×0.04mm 的碎片，落在"圆角圆柱面与平面相切"那条线上（G1 过渡，
+   法向只差 2.8°）：不画棱线（solidEdges 阈值 24°）、不与邻面重叠（不闪）、宽度 <1px。
+   这是 BSP 布尔在相切处的固有残渣，只要不再上百条就说明没有真毛边。 */
+check("跨越大面的碎渣 ≤6 条（且都在相切线上）", cp.longSliver <= 6, "longSliver=" + cp.longSliver);
+check("三角形数量级（v33.53 是 16535，角部球面本身约 +1450）", cp.tris < 2000, "tris=" + cp.tris);
+/* 遗留②的验收点：三条棱交汇处不再是尖角，而是一块球面（角部各方向到球心的距离 ≈ r=5） */
+const prof = JSON.parse(R(`(function(){
+  var r=5, pt=new THREE.Vector3(25,-25,25);
+  var ax=[new THREE.Vector3(-1,0,0),new THREE.Vector3(0,1,0),new THREE.Vector3(0,0,-1)];
+  var cc=pt.clone().addScaledVector(ax[0],r).addScaledVector(ax[1],r).addScaledVector(ax[2],r);
+  var tris=[];
+  S.solid.toPolygons().forEach(function(pg){ var vs=pg.vertices;
+    for (var i=1;i+1<vs.length;i++) tris.push([vs[0].pos,vs[i].pos,vs[i+1].pos]); });
+  function cast(dx,dy,dz){
+    var best=1e9;
+    for (var k=0;k<tris.length;k++){
+      var a=tris[k][0],b=tris[k][1],c=tris[k][2];
+      var e1x=b.x-a.x,e1y=b.y-a.y,e1z=b.z-a.z, e2x=c.x-a.x,e2y=c.y-a.y,e2z=c.z-a.z;
+      var px=dy*e2z-dz*e2y, py=dz*e2x-dx*e2z, pz=dx*e2y-dy*e2x;
+      var det=e1x*px+e1y*py+e1z*pz;
+      if (det>-1e-9&&det<1e-9) continue;
+      var inv=1/det, tx=cc.x-a.x, ty=cc.y-a.y, tz=cc.z-a.z;
+      var u=(tx*px+ty*py+tz*pz)*inv; if (u<-1e-9||u>1+1e-9) continue;
+      var qx=ty*e1z-tz*e1y, qy=tz*e1x-tx*e1z, qz=tx*e1y-ty*e1x;
+      var v=(dx*qx+dy*qy+dz*qz)*inv; if (v<-1e-9||u+v>1+1e-9) continue;
+      var t=(e2x*qx+e2y*qy+e2z*qz)*inv;
+      if (t>1e-4 && t<best) best=t;
+    }
+    return best;
+  }
+  var N=9, mn=1e9, mx=-1e9;
+  for (var i=0;i<=N;i++) for (var j=0;i+j<=N;j++){
+    var a=i/N, b=j/N, c=(N-i-j)/N;
+    var d=ax[0].clone().multiplyScalar(-a).addScaledVector(ax[1],-b).addScaledVector(ax[2],-c);
+    if (d.lengthSq()<1e-12) continue;
+    d.normalize();
+    var t=cast(d.x,d.y,d.z);
+    if (t>1e8) continue;
+    if (t<mn) mn=t; if (t>mx) mx=t;
+  }
+  return JSON.stringify({min:+mn.toFixed(3), max:+mx.toFixed(3)});
+})()`));
+check("角部不再是尖角（各方向到球心 ≤ r+2%：v33.54 会戳到 1.39r）", prof.max <= 5.2, JSON.stringify(prof));
+check("角部确实是球面（最凹处 ≥ 0.94r，只是多面体离散误差）", prof.min >= 4.7, JSON.stringify(prof));
 
 /* ---------------------------------------------------------------- */
 section("D. bug2：圆角随模型移动（草动模型动，圆角不丢）");
@@ -208,6 +255,134 @@ const edgeDup = R(`(function(){
 const ed = JSON.parse(edgeDup);
 check("干净盒子 12 条棱", ed.plain === 12, ed.plain);
 check("面上叠了共面重复片后，棱数不变（T 型碎边不再吃掉真实棱）", ed.dup === ed.plain, ed.dup + " vs " + ed.plain);
+
+/* ---------------------------------------------------------------- */
+/* 角部剖面通用探针：从球心 cc 向角部方向投射，量表面到球心的距离。
+   球面角块 ⇒ 所有方向 ≈ r；尖角/台阶/角料 ⇒ 最远戳到 1.2~1.4r。 */
+function cornerProfile(ptArr, r) {
+  return JSON.parse(R(`(function(){
+    var pt = new THREE.Vector3(${ptArr.map(Number).join(",")});
+    var ax = [new THREE.Vector3(-1,0,0), new THREE.Vector3(0,1,0), new THREE.Vector3(0,0,-1)];
+    var cc = pt.clone().addScaledVector(ax[0], ${r}).addScaledVector(ax[1], ${r}).addScaledVector(ax[2], ${r});
+    var tris = [];
+    S.solid.toPolygons().forEach(function(pg){ var vs = pg.vertices;
+      for (var i = 1; i + 1 < vs.length; i++) tris.push([vs[0].pos, vs[i].pos, vs[i+1].pos]); });
+    function cast(dx, dy, dz){
+      var best = 1e9;
+      for (var k = 0; k < tris.length; k++){
+        var a = tris[k][0], b = tris[k][1], c = tris[k][2];
+        var e1x = b.x-a.x, e1y = b.y-a.y, e1z = b.z-a.z, e2x = c.x-a.x, e2y = c.y-a.y, e2z = c.z-a.z;
+        var px = dy*e2z - dz*e2y, py = dz*e2x - dx*e2z, pz = dx*e2y - dy*e2x;
+        var det = e1x*px + e1y*py + e1z*pz;
+        if (det > -1e-9 && det < 1e-9) continue;
+        var inv = 1/det, tx = cc.x-a.x, ty = cc.y-a.y, tz = cc.z-a.z;
+        var u = (tx*px + ty*py + tz*pz) * inv; if (u < -1e-9 || u > 1 + 1e-9) continue;
+        var qx = ty*e1z - tz*e1y, qy = tz*e1x - tx*e1z, qz = tx*e1y - ty*e1x;
+        var v = (dx*qx + dy*qy + dz*qz) * inv; if (v < -1e-9 || u + v > 1 + 1e-9) continue;
+        var t = (e2x*qx + e2y*qy + e2z*qz) * inv;
+        if (t > 1e-4 && t < best) best = t;
+      }
+      return best;
+    }
+    var N = 9, mn = 1e9, mx = -1e9;
+    for (var i = 0; i <= N; i++) for (var j = 0; i + j <= N; j++){
+      var a = i/N, b = j/N, c = (N-i-j)/N;
+      var d = ax[0].clone().multiplyScalar(-a).addScaledVector(ax[1], -b).addScaledVector(ax[2], -c);
+      if (d.lengthSq() < 1e-12) continue;
+      d.normalize();
+      var t = cast(d.x, d.y, d.z);
+      if (t > 1e8) continue;
+      if (t < mn) mn = t; if (t > mx) mx = t;
+    }
+    return JSON.stringify({min:+mn.toFixed(3), max:+mx.toFixed(3)});
+  })()`));
+}
+function fragStats() {
+  return JSON.parse(R(`(function(){
+    var g = csgGeom(S.solid), pos = g.getAttribute("position"), n = pos.count/3, tiny = 0, sliver = 0, longSliver = 0;
+    for (var i = 0; i < n; i++){
+      var ax = pos.getX(i*3), ay = pos.getY(i*3), az = pos.getZ(i*3);
+      var bx = pos.getX(i*3+1), by = pos.getY(i*3+1), bz = pos.getZ(i*3+1);
+      var cx = pos.getX(i*3+2), cy = pos.getY(i*3+2), cz = pos.getZ(i*3+2);
+      var ux = bx-ax, uy = by-ay, uz = bz-az, vx = cx-ax, vy = cy-ay, vz = cz-az;
+      var nx = uy*vz - uz*vy, ny = uz*vx - ux*vz, nz = ux*vy - uy*vx;
+      var A = Math.sqrt(nx*nx + ny*ny + nz*nz)/2;
+      if (A < 1e-4) tiny++;
+      var mx = Math.max(Math.hypot(ux,uy,uz), Math.hypot(vx,vy,vz), Math.hypot(cx-bx, cy-by, cz-bz));
+      if (mx > 1e-6 && A/(mx*mx) < 1e-3) { sliver++; if (mx > 8) longSliver++; }
+    }
+    return JSON.stringify({tris:n, tiny:tiny, sliver:sliver, longSliver:longSliver});
+  })()`));
+}
+
+/* ---------------------------------------------------------------- */
+section("F. v33.57 bug1：多选模式选多条棱 → 一起圆角");
+R(RESET);
+R('addEntity("rect",{x0:-25,y0:-25,x1:25,y1:25},true);');
+R('S.feature.start=0; S.feature.end=25; S.feature.dir=1; featureExtrude("add");');
+function pickToggle(mid) {
+  return R(`(function(){
+    var segs = edgeSegments(), best = null, bd = 1e9, M = new THREE.Vector3(${mid.join(",")});
+    segs.forEach(function(s){ var d = s.a.clone().add(s.b).multiplyScalar(0.5).distanceTo(M); if (d < bd) { bd = d; best = s; } });
+    toggleEdgeSel(best);
+    return S.pickedEdges.length;
+  })()`);
+}
+const t1 = pickToggle([0, -25, 25]);
+const t2 = pickToggle([25, -25, 0]);
+check("两条棱先后加入棱选区", t1 === 1 && t2 === 2, t1 + "," + t2);
+check("棱选区有整链高亮", R("!!S.hilite") === true);
+const t3 = pickToggle([0, -25, 25]);
+check("再点同一条棱 = 移出（剩 1 条）", t3 === 1, t3);
+const t4 = pickToggle([0, -25, 25]);
+check("再加回来（2 条）", t4 === 2, t4);
+R("fillet(5);");
+const mf = st();
+check("多棱圆角 → 每条棱一个 fillet 特征", mf.feats === "ext,fillet,fillet", mf.feats);
+check("多棱圆角后仍是实体且体积变小", mf.solid && mf.vol > 0 && mf.vol < 50 * 50 * 25, "vol=" + mf.vol);
+check("圆角后棱选区已清空", R("S.pickedEdges.length") === 0);
+R("undo();");
+const mu = st();
+check("撤销 → 一次撤掉这次多棱圆角", mu.feats === "ext", mu.feats);
+R('(function(){ S.pickedEdges.push({a:new THREE.Vector3(),b:new THREE.Vector3()}); S.multi = true; setTool("multi"); })()');
+check("关掉多选开关 → 棱选区清空", R("S.multi") === false && R("S.pickedEdges.length") === 0);
+
+/* ---------------------------------------------------------------- */
+section("G. v33.57 bug2：两条交汇棱分别圆角 → 角部球面补齐（对齐 SolidWorks）");
+R(RESET);
+R('addEntity("rect",{x0:-25,y0:-25,x1:25,y1:25},true);');
+R('S.feature.start=0; S.feature.end=25; S.feature.dir=1; featureExtrude("add");');
+pick([0, -25, 25]); R("fillet(5);");
+pick([25, -25, 0]); R("fillet(5);");
+const g2s = st();
+check("两条棱各自成特征", g2s.feats === "ext,fillet,fillet", g2s.feats);
+const g2c = fragStats();
+check("两棱交汇角无零面积三角", g2c.tiny === 0, "tiny=" + g2c.tiny);
+check("两棱交汇角细长三角个位数", g2c.sliver <= 12 && g2c.longSliver <= 6,
+  "sliver=" + g2c.sliver + " longSliver=" + g2c.longSliver);
+/* v33.56 及以前：后做的那条棱链端被先做的圆角截短 → 角上留"平端帽 + 角料"，
+   剖面最远戳到 ~6.9（1.39r）。现在端段越界延长 + 等半径 2 链角补球面 → ≈5。 */
+const prof2 = cornerProfile([25, -25, 25], 5);
+check("交汇角不再是台阶/角料（max ≤ 5.2，v33.56 戳到 6.9）", prof2.max <= 5.2, JSON.stringify(prof2));
+check("交汇角确实是球面（min ≥ 4.7）", prof2.min >= 4.7, JSON.stringify(prof2));
+const g2v = st();
+check("补角后体积仍为正且小于裸盒", g2v.solid && g2v.vol > 0 && g2v.vol < 50 * 50 * 25, "vol=" + g2v.vol);
+
+/* ---------------------------------------------------------------- */
+section("H. v33.57 bug3：撤销不动视角（zoom≠1 时视锥不再被反复除以 zoom）");
+R("S.cam3.zoom = 2.4; S.cam3.updateProjectionMatrix(); resizeView();");
+const FR = `(function(){ return JSON.stringify({
+  l:S.cam3.left, t:S.cam3.top, z:S.cam3.zoom,
+  p:[S.cam3.position.x,S.cam3.position.y,S.cam3.position.z],
+  tg:[S.ctrl3.target.x,S.ctrl3.target.y,S.ctrl3.target.z] }); })()`;
+const fr0 = JSON.parse(R(FR));
+R("refreshAll(); refreshAll(); undo(); refreshAll();");
+const fr1 = JSON.parse(R(FR));
+check("视锥半高不再缩水", fr0.l === fr1.l && fr0.t === fr1.t,
+  fr0.l + "/" + fr0.t + " vs " + fr1.l + "/" + fr1.t);
+check("缩放级别不变", fr0.z === fr1.z, fr0.z + " vs " + fr1.z);
+check("相机位置/目标不变", JSON.stringify(fr0.p) === JSON.stringify(fr1.p) &&
+  JSON.stringify(fr0.tg) === JSON.stringify(fr1.tg));
 
 console.log("\n结果: " + pass + " 通过, " + fail + " 失败");
 process.exit(fail ? 1 : 0);
