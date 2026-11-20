@@ -188,6 +188,10 @@
   #cmChipRow .cm-chip .cm-cbadge{ font-size:10px; color:#9affc4; }
   #cmChipRow .cm-chip.on{ border-color:var(--acc); color:#fff3e4; background:rgba(240,140,66,.24); }
   #cmChipRow .cm-chip.ghost{ border:1px dashed #3a5a86; color:#9fc4ff; background:rgba(43,70,110,.22); }
+  /* v33.64：单个实例的"收回"卡片（点一下只收回这一个） */
+  #cmChipRow .cm-chip.cm-drop{ border:1px dashed #8a4a3a; color:#ffd0c0;
+    background:rgba(90,44,30,.28); }
+  #cmChipRow .cm-chip.cm-drop:active{ background:rgba(160,60,40,.5); }
   #cmChipRow .cm-chip:active{ background:rgba(240,140,66,.34); }
   #cmRowNote{ font-size:11px; color:var(--sub); padding:0 12px 10px; margin:0; line-height:1.65; }
   #cmRowNote[hidden]{ display:none; }
@@ -520,6 +524,10 @@
     <div id="cmChipRow"></div>
     <div id="cmRowNote">还没有自建模型。在上面把实体处理好后，点左侧「存为自建」保存，
       出来就能在这里点名字放置（暂时保存只在本页有效，永久保存下次进来还在）。</div>
+    <div class="tip" style="padding:0 12px 6px" id="cmRowTip">
+      放出来的模型和拼装部件一样<b>参与「点选保留部分」</b>：切到点选模式后轻点它的某一块就能单独隐藏。
+      行里 <b>№n ✕</b> 是"只收回这一个"，「收回全部」才一次清空。
+    </div>
     <div class="tip" style="padding:0 12px 12px">
       说明：正平面∥V、水平面∥H、侧平面∥W；正垂面⊥V、铅垂面⊥H、侧垂面⊥W（角度=与水平面的夹角，
       铅垂面角度=与侧立面W的夹角）。左右= X(+右)、高低= Y(+上)、前后= Z(+前)，单位 mm。
@@ -528,6 +536,7 @@
       恰好相交，或正好经过模型的轮廓特征点（棱、顶点、端面圆周）时也会吸附</b>。
       <b>拖动拼装部件 / 相贯体时，与其它模型刚好接触（相切不重叠）同样会自动吸附</b>（顶部提示条说明吸到了哪）。
       "点选保留部分"：立体被启用的面分成几个部分时，直接点 3D 里想保留的部分之外的部分（变暗），即可只留想要的。
+      <b>放出来的自建模型也一样</b>：它和拼装部件同类，同样会被启用的面/贯穿体切开，切到点选模式后可以逐块点掉。
       <br>贯穿圆：和面一样分正平面/正垂面/水平面/铅垂面/侧平面/侧垂面六种——圆柱的轴就是该类型面的法向，
       沿轴无限贯穿＝一个无限长圆柱（例：水平面型的贯穿圆＝竖直打孔）；它和面一样会把立体分开，
       同样可在"点选保留部分"里点选留/不留。青色圆环永远画在立体前面，拖住即可移动，面板里可改角度/位置/半径。
@@ -1876,9 +1885,10 @@ function partEndPlane(pr, which){
 }
 /* 点所属部分：面取符号位（1 = 法向一侧），贯穿圆取符号位（1 = 圆内），
    部件取 0/1/2/3 四值码（见 partCodeAt），组合即 key。 */
-function cellKeyAt(p, act, csArg, psArg){
-  /* key 格式：面段 "f<id>:<0|1>" | 贯穿体段 "c<id>:<0|1>" | 部件段 "p<id>:<0|1|2|3>"，用 "|" 分隔。
-     因为 act / cs / ps 都按 _id 升序，同一个几何位置在任何增删顺序下 key 都相同
+function cellKeyAt(p, act, csArg, psArg, msArg){
+  /* key 格式：面段 "f<id>:<0|1>" | 贯穿体段 "c<id>:<0|1>" | 部件段 "p<id>:<0|1|2|3>"
+     | 自建模型段 "m<id>:<0|1>"，用 "|" 分隔。
+     因为 act / cs / ps / ms 都按 _id 升序，同一个几何位置在任何增删顺序下 key 都相同
      → pickSel 里记的"隐藏"状态不会因为重排而错位。 */
   var fs = [];
   for(var j=0; j<act.length; j++){
@@ -1908,7 +1918,15 @@ function cellKeyAt(p, act, csArg, psArg){
     if(partNearSurface(pr, p)) return null;      // 恰在部件表面上 → 不算任何块
     pbits.push("p" + pr._id + ":" + partCodeAt(pr, p));
   }
-  return fs.join(",") + "|" + cbits.join(",") + "|" + pbits.join(",");
+  /* v33.64：自建模型（放置出来的实例）—— 和拼装部件一样给"体内/体外"符号位。
+     没有放置任何自建模型时这一段不出现，key 与旧版本完全一致。
+     点内判定自带包围盒快速筛除，主立体那上万个采样点在模型外面时几乎零开销。 */
+  var ms = msArg || activeCustomBodies(), gbits = [];
+  for(var q=0; q<ms.length; q++){
+    gbits.push("m" + ms[q]._id + ":" + (cmInsideBody(ms[q], p) ? 1 : 0));
+  }
+  var head = fs.join(",") + "|" + cbits.join(",") + "|" + pbits.join(",");
+  return gbits.length ? (head + "|" + gbits.join(",")) : head;
 }
 /* 相贯体把空间分成 4 类（v33.4，与部件的 partCodeAt 完全对应）：
      0 = 相贯体外部、且在它轴向"两端之间"（从侧面出去）
@@ -2093,13 +2111,15 @@ function activeParts(){
   arr.sort(function(a,b){ return a._id - b._id; });
   return arr;
 }
-/* 解析 / 拼装分块 key（"f<id>:<b>,...|c<id>:<b>,...|p<id>:<0|1|2|3>,..."）
-   注意：部件段存的是**数字码**（0/1/2/3），不是布尔。 */
+/* 解析 / 拼装分块 key（"f<id>:<b>,...|c<id>:<b>,...|p<id>:<0|1|2|3>,...|m<id>:<0|1>,..."）
+   注意：部件段存的是**数字码**（0/1/2/3），不是布尔。
+   v33.64：新增第 4 段 m（自建模型体积位）—— 自建模型和"拼装部件"一样参与点选分块，
+   1 = 在该自建模型体内。没有放置自建模型时这一段不出现，老 key 完全不变。 */
 function parseCellKey(k){
   /* v33.7：连通性分割会给 key 加 "#n" 后缀（同一符号位下的第 n 个连通分量）。
      解析符号位时必须先剥掉后缀，否则 parseInt 会把 ":1#" 之类解析错。 */
   k = String(k).replace(/#\d+$/, "");
-  var parts3 = String(k).split("|"), fm = {}, cm = {}, pm = {};
+  var parts3 = String(k).split("|"), fm = {}, cm = {}, pm = {}, gm = {};
   if(parts3[0]) parts3[0].split(",").forEach(function(tok){
     if(!tok) return;
     var q = tok.split(":"); fm[parseInt(q[0].slice(1),10)] = q[1] === "1";
@@ -2113,9 +2133,14 @@ function parseCellKey(k){
     if(!tok) return;
     var q = tok.split(":"); pm[parseInt(q[0].slice(1),10)] = parseInt(q[1], 10) || 0;
   });
-  return {fm:fm, cm:cm, pm:pm};
+  /* v33.64：自建模型段（0 = 体外 / 1 = 体内） */
+  if(parts3[3]) parts3[3].split(",").forEach(function(tok){
+    if(!tok) return;
+    var q = tok.split(":"); gm[parseInt(q[0].slice(1),10)] = q[1] === "1";
+  });
+  return {fm:fm, cm:cm, pm:pm, gm:gm};
 }
-function keyOfBits(fm, cm, pm){
+function keyOfBits(fm, cm, pm, gm){
   pm = pm || {};
   var fk = Object.keys(fm).sort(function(a,b){ return a-b; })
     .map(function(id){ return "f" + id + ":" + (fm[id] ? "1" : "0"); });
@@ -2129,7 +2154,11 @@ function keyOfBits(fm, cm, pm){
     });
   var pk2 = Object.keys(pm).sort(function(a,b){ return a-b; })
     .map(function(id){ return "p" + id + ":" + (pm[id] || 0); });
-  return fk.join(",") + "|" + ck.join(",") + "|" + pk2.join(",");
+  /* v33.64：自建模型段只在真的有模型时出现，没有放置时 key 与老版本逐字节相同 */
+  var gk = Object.keys(gm || {}).sort(function(a,b){ return a-b; })
+    .map(function(id){ return "m" + id + ":" + (gm[id] ? "1" : "0"); });
+  var head = fk.join(",") + "|" + ck.join(",") + "|" + pk2.join(",");
+  return gk.length ? (head + "|" + gk.join(",")) : head;
 }
 /* 隐藏状态"继承"（v25）：新加一个面/贯穿体/部件后，原来的块会被细分、key 多一位，
    旧 key 就全对不上了 → 用户点好的隐藏状态全部丢失，得从头再点一遍。
@@ -2150,21 +2179,24 @@ function selInherit(k, pk, depth){
   if(_selInheritMemo[memoKey] !== undefined) return _selInheritMemo[memoKey];
   _selInheritMemo[memoKey] = true;          // 防环：递归中先占位
   pk.pm = pk.pm || {};
+  pk.gm = pk.gm || {};                      // v33.64：自建模型位也要能"少一个条件"地继承
   var cands = [];
   function dropOne(kind, id){
-    var f2 = {}, c2 = {}, p2 = {};
+    var f2 = {}, c2 = {}, p2 = {}, g2 = {};
     for(var a in pk.fm) if(!(kind === "f" && String(a) === String(id))) f2[a] = pk.fm[a];
     for(var b in pk.cm) if(!(kind === "c" && String(b) === String(id))) c2[b] = pk.cm[b];
     for(var c in pk.pm) if(!(kind === "p" && String(c) === String(id))) p2[c] = pk.pm[c];
-    cands.push({fm:f2, cm:c2, pm:p2});
+    for(var d in pk.gm) if(!(kind === "m" && String(d) === String(id))) g2[d] = pk.gm[d];
+    cands.push({fm:f2, cm:c2, pm:p2, gm:g2});
   }
   Object.keys(pk.fm).forEach(function(id){ dropOne("f", id); });
   Object.keys(pk.cm).forEach(function(id){ dropOne("c", id); });
   Object.keys(pk.pm).forEach(function(id){ dropOne("p", id); });
+  Object.keys(pk.gm).forEach(function(id){ dropOne("m", id); });
   var i, ck, res = true;
   /* 先看"直接父块"：只要有一个父块明确是隐藏的，本块就隐藏 */
   for(i=0;i<cands.length;i++){
-    ck = keyOfBits(cands[i].fm, cands[i].cm, cands[i].pm);
+    ck = keyOfBits(cands[i].fm, cands[i].cm, cands[i].pm, cands[i].gm);
     if(ck === k) continue;
     if(pickSel[ck] !== undefined){
       if(pickSel[ck] === false){ res = false; break; }
@@ -2176,7 +2208,7 @@ function selInherit(k, pk, depth){
   /* 再往上找一层（新增了两个条件的情况），深度受 depth 限制 */
   if(res !== false && depth < 2){
     for(i=0;i<cands.length;i++){
-      ck = keyOfBits(cands[i].fm, cands[i].cm, cands[i].pm);
+      ck = keyOfBits(cands[i].fm, cands[i].cm, cands[i].pm, cands[i].gm);
       if(ck === k) continue;
       if(selInherit(ck, cands[i], depth+1) === false){ res = false; break; }
     }
@@ -2451,10 +2483,14 @@ function estimateSampleSpacing(pts){
 
 function rebuildCells(){
   var act = activeFaceData(), cs = activeCyls(), ps = activeParts();
+  /* v33.64：自建模型（放置出来的实例）也要参与分块 —— 用户的原话是
+     "这些自建模型与正常添加出来的模型拼装的 3d 模型一样，可以对其使用点选保留部分功能"。
+     所以它和"拼装部件"同一个身份（多一段 m 符号位），而不是相贯体那种"切割体"。 */
+  var ms = activeCustomBodies();
   /* v33：**实验室模式也要分块** —— 以前"没面没相贯体就直接 return"，于是
      lab 里放两个部件完全分不开，棱锥和长方体相贯也只有一个可选对象。
-     现在只要"有部件"也照样分块（部件彼此相贯会切出子区域）。 */
-  if(!act.length && !cs.length && !ps.length){ cells = []; return; }
+     现在只要"有部件 / 有自建模型"也照样分块（它们彼此相贯会切出子区域）。 */
+  if(!act.length && !cs.length && !ps.length && !ms.length){ cells = []; return; }
   _selInheritMemo = null;          // 每次重建重置记忆化（pickSel 可能已变）
 
   /* v33.7：收集"每个 key 对应的全部采样点"，为连通性分割做准备。
@@ -2463,11 +2499,13 @@ function rebuildCells(){
      "点锥顶，整个棱锥全没了"的根本原因。 */
   var ptsByKey = {};
   function addPoint(p){
-    var k = cellKeyAt(p, act, cs, ps);
+    var k = cellKeyAt(p, act, cs, ps, ms);
     if(k === null) return;
     (ptsByKey[k] = ptsByKey[k] || []).push(p.clone());
   }
-  samplePoints(act).forEach(addPoint);
+  /* v33.64：只放了自建模型、一个面/贯穿体/部件都没有时，主立体本身没有"被切开"，
+     不该再造出一块和本体重复的分块（那样 coneF 和分块会同时画）。 */
+  if(act.length || cs.length || ps.length) samplePoints(act).forEach(addPoint);
   /* 部件自己的内部也要采样：主立体的采样点只在主立体里，
      实验室模式没有主立体 → 只采主立体就一个点都没有，部件永远分不出来。 */
   if(ps.length){
@@ -2481,6 +2519,13 @@ function rebuildCells(){
       });
     });
   }
+  /* v33.64：自建模型的体内采样点。**不按主立体过滤** —— 自建模型通常就摆在主立体
+     旁边甚至外面，那正是它自己的材料范围（部件要过滤是因为部件块画的是主立体几何）。 */
+  if(ms.length){
+    ms.forEach(function(pe){
+      cmBodyPoints(pe).forEach(addPoint);
+    });
+  }
   /* v33.7：**按空间连通性真正拆分**。
      同一个 key 的采样点如果分成几个互不相连的团（例如锥顶尖与锥底，
      都在圆柱侧面之外、符号位完全相同，但空间上隔着整个锥身），
@@ -2492,7 +2537,7 @@ function rebuildCells(){
      splitByConnectivity 用它把"被采样层切出来的假分量"合并回去
      （判据：两分量最近点连线的中点仍在同一符号位区域 → 同一块材料）。
      不传就退化成纯距离判据（旧行为）。 */
-  var keyAtProbe = function(P){ return cellKeyAt(P, act, cs, ps); };
+  var keyAtProbe = function(P){ return cellKeyAt(P, act, cs, ps, ms); };
   var splitList = splitByConnectivity(ptsByKey, Math.max(2.5, spacing*1.15), keyAtProbe);
   /* 转回"key -> true"的形式，同时记下每个新 key 的采样点（给 selInherit 用） */
   var keys = {}, ptsBySplitKey = {}, ptsSplitByKey = {};
@@ -2506,15 +2551,19 @@ function rebuildCells(){
   /* v25：先清掉"引用了已删除的面/贯穿体/部件"的旧 key。
      否则删掉一个贯穿体后，之前那批 key 会突然对上新的分块 → 整块模型被重新隐藏，
      看上去就像"删相贯体把内置模型一起删了"。（用全量判断，停用不算删除） */
-  var liveF = {}, liveC = {}, liveP = {};
+  var liveF = {}, liveC = {}, liveP = {}, liveM = {};
   faces.forEach(function(f){ if(f._id != null) liveF[f._id] = 1; });
   cyls.forEach(function(c){ if(c._id != null) liveC[c._id] = 1; });
   parts.forEach(function(p){ if(p._id != null) liveP[p._id] = 1; });
+  /* v33.64：自建模型实例的 _id 是"放置时分配、收回即作废"的，收回后旧 key 必须清掉，
+     否则下次放一个别的模型可能复用到同一个 _id，把旧的隐藏状态套到新模型上。 */
+  ms.forEach(function(pe){ if(pe._id != null) liveM[pe._id] = 1; });
   Object.keys(pickSel).forEach(function(k){
     var p = parseCellKey(k), bad = false;
     Object.keys(p.fm).forEach(function(id){ if(!liveF[id]) bad = true; });
     Object.keys(p.cm).forEach(function(id){ if(!liveC[id]) bad = true; });
     Object.keys(p.pm).forEach(function(id){ if(!liveP[id]) bad = true; });
+    Object.keys(p.gm).forEach(function(id){ if(!liveM[id]) bad = true; });
     if(bad) delete pickSel[k];
   });
   cells = Object.keys(keys).sort().map(function(k){
@@ -2586,6 +2635,19 @@ function rebuildCells(){
     for(var oi=0; oi<ps.length; oi++){
       if(pk.pm[ps[oi]._id] === 3){ ownerPart = oi; break; }
     }
+    /* v33.64：这块落在哪个自建模型体内（同一位置两个模型重叠时取 _id 小的那个）。
+       ownerPe 决定"这块用哪份几何体画"—— 有它就画自建模型自己的网格。 */
+    var ownerPe = null;
+    for(var mi2=0; mi2<ms.length; mi2++){
+      if(pk.gm[ms[mi2]._id]){ ownerPe = ms[mi2]; break; }
+    }
+    /* 每个自建模型对这块的约束：keep=-1 保留体内 / keep=+1 保留体外。
+       给 cellAtPoint（点选命中判定）用；着色器做不了任意网格的点内判定，
+       所以渲染靠"几何体本身"（ownerPe 那块）＋这块的裁剪平面来保证不越界。 */
+    var bodies = {};
+    for(var mj=0; mj<ms.length; mj++){
+      bodies[ms[mj]._id] = {pe: ms[mj], keep: pk.gm[ms[mj]._id] ? -1 : 1};
+    }
     /* v33.10（"点锥顶没反应"的真正原因）：
        连通分量只拆了 key，但裁剪条件仍只按符号位算 ——
        于是同一符号位下的每个分量都覆盖**整个**符号位区域。
@@ -2617,7 +2679,8 @@ function rebuildCells(){
     }
     var sel0 = (inHolePlug && pickSel[k] === undefined) ? false : selInherit(k, pk, 0);
     return {key:k, planes:planes, cyls:cylSpecs, parts:partSpecs,
-            ownerPart: ownerPart, pts: ptsBySplitKey[k] || null,
+            ownerPart: ownerPart, ownerPe: ownerPe, bodies: bodies,
+            pts: ptsBySplitKey[k] || null,
             sel: sel0};
   });
 }
@@ -2683,9 +2746,14 @@ function cellCaps(c, act){
     var psCap = activeParts();
     if(psCap[c.ownerPart]) ownPr = psCap[c.ownerPart];
   }
+  /* v33.64：自建模型块（ownerPe）→ 封盖按"平面 ∩ 该自建模型"算。
+     和部件块同一个道理：这块能画出来的材料就是那个模型的网格，
+     封盖只能是"平面与它的截面"，否则切口敞着会看穿到深色内壁。 */
+  var ownPe = c.ownerPe || null;
   for(var m=0; m<nP; m++){
     var o = act[m];
     var sp = ownPr ? partSectionPoly2D(ownPr, o.nv, o.d)
+           : ownPe ? cmSectionPoly2D(ownPe, o.nv, o.d)
                    : sectionPoly2D(o.nv, o.d, 96);
     if(!sp.poly || sp.poly.length < 3) continue;
     var B = sp.B, poly = sp.poly;
@@ -2743,6 +2811,7 @@ function cellCaps(c, act){
 function buildCellVis(){
   _partCapCache = {};       // v33.31：部件截面封盖缓存按次重建
   _mainCapCache = {};       // v33.33：主立体截面封盖缓存按次重建
+  _cmCapCache = {};         // v33.64：自建模型截面封盖缓存按次重建
   if(cellGroup){
     scene.remove(cellGroup);
     cellGroup.traverse(function(ch){ if(ch.material) ch.material.dispose(); });
@@ -2751,7 +2820,14 @@ function buildCellVis(){
   if(cellGeo){ cellGeo.dispose(); cellGeo = null; }
   if(cellOwnGeos){ cellOwnGeos.forEach(function(g){ try{ g.dispose(); }catch(_){} }); }
   cellOwnGeos = [];
-  if(mode !== "pick") return;
+  /* v33.64：离开点选模式 → 自建模型的外壳必须显回来（分块网格已经没了）。
+     放在 mode 判断之前，保证"切回其他模式"时不会留下一片空白。 */
+  if(mode !== "pick"){
+    for(var ci0=0; ci0<placedCustom.length; ci0++){
+      if(placedCustom[ci0] && placedCustom[ci0].mesh) placedCustom[ci0].mesh.visible = true;
+    }
+    return;
+  }
   /* v28 兜底：点选模式下如果一块都没分出来（没有面/贯穿体，或采样没落进任何块），
      就把本体显示出来，别让屏幕空着（"撤销把模型恢复成空白"就是这个原因）。 */
   if(!cells.length){ coneF.visible = coneB.visible = true; }
@@ -2787,11 +2863,23 @@ function buildCellVis(){
       }
     });
   }
+  /* v33.64：自建模型也一样 —— 有分块就用分块代表它（否则外壳会把分块整个盖住，
+     点隐藏某一块屏幕上毫无变化 = 用户说的"点了没反应"）。逐个判断：
+     只有"真的分出了块"的实例才藏外壳，采样失败的那种仍然画外壳，不至于整块消失。 */
+  if(placedCustom.length){
+    for(var cq=0; cq<placedCustom.length; cq++){
+      var peq = placedCustom[cq];
+      if(!peq || !peq.mesh) continue;
+      var hasCmCell = cells.some(function(cc){ return cc.ownerPe === peq; });
+      peq.mesh.visible = !hasCmCell;
+    }
+  }
   cells.forEach(function(c){
     /* v33.2：决定这一块用哪份几何体。
        · 落在某个部件内部（ownerPart != null）→ 用该部件的几何体（已 applyMatrix4 到世界位姿）
+       · v33.64：落在某个自建模型体内（ownerPe）→ 用那个放置实例的网格（世界坐标副本）
        · 否则用主立体几何（主立体存在时）
-       实验室模式没有主立体，所以只有"部件内部"的块能画出来；这样点选模式里
+       实验室模式没有主立体，所以只有"部件/自建模型内部"的块能画出来；这样点选模式里
        看到的每一块都对应一个真实存在、可被射线命中的实体。 */
     var useGeo = null;
     if(c.ownerPart != null && psC[c.ownerPart]){
@@ -2799,6 +2887,10 @@ function buildCellVis(){
       pg.applyMatrix4(partMatrix(psC[c.ownerPart]));
       cellOwnGeos.push(pg);
       useGeo = pg;
+    } else if(c.ownerPe && c.ownerPe.mesh){
+      var cg = cmBodyGeoWorld(c.ownerPe);
+      cellOwnGeos.push(cg);
+      useGeo = cg;
     } else if(mainUsable){
       useGeo = cellGeo;
     }
@@ -2817,11 +2909,17 @@ function buildCellVis(){
        主立体的分块仍保持模型橙（那是"被切开的立体"，橙色是正确的）。 */
     var ownPart = (c.ownerPart != null && psC[c.ownerPart]);
     var tintPart = ownPart && partTint;
-    /* 正面 / 背面颜色：拼装部件跟随部件配色，主立体用模型橙 */
+    /* v33.64：自建模型块用它自己的模型色（与外壳 0xe7974b 同色），
+       这样从"显示全部"切到"点选"时颜色不会跳。 */
+    var ownCm = !!c.ownerPe;
+    /* 正面 / 背面颜色：拼装部件跟随部件配色，自建模型用模型橙，主立体用主立体橙 */
     var colF, colB;
     if(ownPart){
       colF = tintPart ? 0x12d6c8 : 0x8fd8ff;      // 变实：青色实体 / 默认：半透明青蓝
       colB = tintPart ? 0x0a7a72 : 0x2f6a8f;      // 对应的暗调背面
+    } else if(ownCm){
+      colF = 0xe7974b;                            // 自建模型分块：模型本体色
+      colB = 0x5b3413;
     } else {
       colF = 0xf08c42;                            // 主立体分块：模型橙（不变）
       colB = 0x4b2a14;
@@ -2876,7 +2974,7 @@ function buildCellVis(){
            （变实 = 青色实体 #12d6c8，未变实 = 青蓝 #8fd8ff），
            主立体分块保持切口橙 #dd7a34。 */
         var capMat = new THREE.MeshLambertMaterial({
-          color: ownPart ? (tintPart ? 0x12d6c8 : 0x8fd8ff) : 0xdd7a34,
+          color: ownPart ? (tintPart ? 0x12d6c8 : 0x8fd8ff) : (ownCm ? 0xd9832f : 0xdd7a34),
           side:THREE.DoubleSide, clippingPlanes:c.planes, clipIntersection:false});
         setCylSpecs(capMat, withBoreCapSpec(capSpecs));   // 孔洞处丢弃，别把孔盖死（空心圆柱连内孔一起挖）
         /* v33.31（"拼装后点选保留仍中空"的根因②）：
@@ -6234,6 +6332,8 @@ function endDrag(){
     customDrag = null;
     hideSnapTip();
     controls.enabled = true;
+    /* v33.64：拖完要让分块跟上新位置（点选模式下这块是被分块代表的） */
+    cmCellsDirty();
     return;
   }
   if(!drag) return;
@@ -6285,8 +6385,9 @@ function marchToVisibleCell(p0, rd, act){
      ② cell.cyls（shader discard）：keep>0 保留外部、keep<0 保留内部
      ③ cell.parts（部件体积）：同上
    返回 cell 对象或 null。 */
-function cellAtPoint(P){
+function cellAtPoint(P, surfBodyId){
   var cs = activeCyls();
+  var ms = activeCustomBodies();
   var best = null, bestMargin = -1e18;
   for(var i=0;i<cells.length;i++){
     var c = cells[i], ok = true, margin = 1e18;
@@ -6315,6 +6416,17 @@ function cellAtPoint(P){
       var ins = insidePartWorld(ps[n], P);
       if(pp.keep > 0){ if(ins){ ok = false; } }
       else           { if(!ins){ ok = false; } }
+    }
+    if(!ok) continue;
+    /* ④ v33.64：自建模型体积裁剪（与 ③ 同一套语义）。
+       点选命中点**正好落在模型表面上**，奇偶判定在表面上的结果不可信，
+       所以命中网格自己所属的那个模型用 surfBodyId 直接认定为"体内"。 */
+    for(var nb=0; nb<ms.length && ok; nb++){
+      var bb = (c.bodies||{})[ms[nb]._id];
+      var keepB = bb ? bb.keep : 1;
+      var insB = (surfBodyId != null && ms[nb]._id === surfBodyId) ? true : cmInsideBody(ms[nb], P);
+      if(keepB > 0){ if(insB){ ok = false; } }
+      else         { if(!insB){ ok = false; } }
     }
     if(!ok) continue;
     /* 多个都满足时，取"离边界最远"的那个（最稳，不会选到临界块） */
@@ -6421,9 +6533,30 @@ function tapPick(e){
          （锥身+锥底），于是"点锥顶却把整块藏了"。
          这里对每个命中点做一次 cellAtPoint，取真正包含它的那一块。 */
       var key = null, hitPt = null;
+      /* v33.64：命中的是**自建模型的分块网格**时，直接认这个网格自己的 key。
+         原因：射线命中的点正好落在自建模型的表面上，而"点在不在模型体内"的奇偶判定
+         在表面上不可信 —— 沿视线微移的那套兜底（resolvePickKey）会把它判成"体外"，
+         于是点到自建模型却隐藏了别处的块（表现为"点了没反应"）。
+         这里只做该块自身的裁剪平面校验，通过就用它。 */
+      for(var hqc=0; hqc<ch.length && key===null; hqc++){
+        var obc = ch[hqc].object, ckc = obc.userData && obc.userData.ck;
+        if(!ckc) continue;
+        var celc = cellOfKey(ckc);
+        if(!celc || !celc.ownerPe) continue;
+        var ptc = ch[hqc].point, okc = true;
+        for(var jc=0; jc<celc.planes.length; jc++){
+          var plc = celc.planes[jc];
+          if(plc.normal.x*ptc.x + plc.normal.y*ptc.y + plc.normal.z*ptc.z + plc.constant < -1e-6){ okc = false; break; }
+        }
+        if(okc){ key = ckc; hitPt = ptc; }
+      }
       for(var hq=0; hq<ch.length && key===null; hq++){
         var hp0 = ch[hq].point;
-        var cellHit = cellAtPoint(hp0);
+        /* v33.64：命中点压在自建模型表面上时，把"它属于哪个模型"告诉 cellAtPoint，
+           否则表面上的奇偶判定不可信，会把它判到"体外那块"去。 */
+        var ck0 = ch[hq].object.userData && ch[hq].object.userData.ck;
+        var cel0 = ck0 ? cellOfKey(ck0) : null;
+        var cellHit = cellAtPoint(hp0, cel0 && cel0.ownerPe ? cel0.ownerPe._id : null);
         if(cellHit){ key = cellHit.key; hitPt = hp0; }
       }
       if(key === null){
@@ -6574,6 +6707,8 @@ function updatePickInfoText(){
   var txt = "";
   if(cells.length) txt += "共 " + cells.length + " 部分";
   if(parts.length) txt += (txt ? " · " : "") + "拼装 " + parts.length + " 个";
+  /* v33.64：放出来的自建模型也在这套分块里 */
+  if(placedCustom && placedCustom.length) txt += (txt ? " · " : "") + "自建 " + placedCustom.length + " 个";
   if(h) txt += " · 已隐藏 " + h + " 个" + (pt ? "（拼装 " + pt + "）" : "");
   else txt += " · 全部保留";
   el.textContent = txt;
@@ -6654,7 +6789,9 @@ function attachDrag(){
       }
     }
     /* v33.61：自建模型和相贯体一样可以直接抓住拖动。
-       它不参与着色器裁剪/点选隐藏，所以这里直接吞掉本次 tap（不会误隐藏分块）。 */
+       v33.64：**不再吞掉 tap** —— 它现在参与"点选保留部分"，
+       点它就是要点某一小块；吞掉 tap 会变成"点了没反应"。
+       滑动超过阈值仍然会进入拖动（endDrag 里再重建分块）。 */
     if(!dragLocked && customGroup && customGroup.children.length){
       var cmh = raycaster.intersectObjects(customGroup.children, false);
       var cmHit = null;
@@ -6668,7 +6805,6 @@ function attachDrag(){
             o0:new THREE.Vector3(pe.x,pe.y,pe.z),
             nrm:raycaster.ray.direction.clone().normalize(),
             sx:e.clientX, sy:e.clientY};
-          tap=null;
           return;
         }
       }
@@ -6735,6 +6871,10 @@ function attachDrag(){
                       sx:pendingCustom.sx, sy:pendingCustom.sy};
         try{ customDrag.snap = snapContactPrepare(customDrag.o0, customDrag.nrm,
                                                   "custom:"+customDrag.ci); }catch(_){ customDrag.snap = null; }
+        /* v33.64：点选模式下这个模型是由分块网格代表的（外壳被藏了）。
+           拖动时先把外壳显回来、把它的分块暂时藏掉 —— 拖动的过程才顺滑，
+           松手（endDrag）再重建分块。 */
+        if(mode === "pick") cmDragPreviewShell(placedCustom[customDrag.ci]);
         pendingCustom = null;
       } else {
         partDrag = {pi:pendingPart.pi, p0:pendingPart.p0, o0:pendingPart.o0,
@@ -8126,6 +8266,220 @@ function cmSolidEdges(g, deg){
   });
   return out;
 }
+/* ==================================================================
+   v33.64：自建模型参与「点选保留部分」
+   用户需求原话：**"这些自建模型与正常添加出来的模型拼装的 3D 模型一样，
+   可以对其使用点选保留部分功能（不要和相贯体一样，之前是我说错了）"**
+   —— 也就是说它的身份是"拼装部件"，不是相贯体那种"切割体"。
+
+   做法（尽量复用现成的分块管线，不另起一套）：
+     · 每个放置出来的实例给一个**稳定实例号 _id**，cell key 补一段 `m<id>:0|1`；
+     · rebuildCells 采样它的体内点 → 与主立体/部件一起做符号位 + 连通性拆分；
+     · 分块渲染时，属于它的块用**它自己的网格**（和部件块用部件几何同一个套路），
+       配合该块的裁剪平面 + 着色器规格，切面形状与屏幕上一致；
+     · 封盖用"平面 ∩ 该网格"的截面凸包（与 partSectionPoly2D 同法）。
+
+   ★ 点内判定：网格只平移不旋转，world→local 就是减位置。按 (x,z) 分桶，
+     沿 +Y 数穿越三角形次数（奇偶）。主立体上万个采样点里绝大多数会被
+     包围盒一行挡掉，真正进桶的只有模型附近那一小撮。
+   ================================================================== */
+var _cmBodySeq = 0;        // 实例号分配器（收回不回收，保证旧 key 不会撞上新模型）
+var _cmCapCache = null;    // 本轮的"平面 ∩ 自建模型"截面缓存（buildCellVis 时清空）
+
+function activeCustomBodies(){
+  var arr = [];
+  for(var i=0;i<placedCustom.length;i++){
+    var pe = placedCustom[i];
+    if(!pe || !pe.mesh || !pe.mesh.geometry) continue;
+    if(pe._id == null) pe._id = ++_cmBodySeq;
+    arr.push(pe);
+  }
+  arr.sort(function(a,b){ return a._id - b._id; });
+  return arr;
+}
+function cmBodyIndex(pe){
+  var g = pe && pe.mesh && pe.mesh.geometry;
+  if(!g) return null;
+  if(pe._idx && pe._idx.geo === g) return pe._idx;
+  var pos = g.attributes && g.attributes.position;
+  if(!pos) return null;
+  var n = Math.floor(pos.count/3), arr = pos.array;
+  if(!n) return null;
+  var tris = new Float64Array(n*9);
+  var lox=1e18, loy=1e18, loz=1e18, hix=-1e18, hiy=-1e18, hiz=-1e18, i;
+  for(i=0;i<n*3;i++){
+    var x=arr[i*3], y=arr[i*3+1], z=arr[i*3+2];
+    tris[i*3]=x; tris[i*3+1]=y; tris[i*3+2]=z;
+    if(x<lox)lox=x; if(x>hix)hix=x;
+    if(y<loy)loy=y; if(y>hiy)hiy=y;
+    if(z<loz)loz=z; if(z>hiz)hiz=z;
+  }
+  /* (x,z) 分桶：桶数随面数走，350 面 ≈ 24×24，12k 面给 40×40 */
+  var NB = n > 4000 ? 40 : 24;
+  var wx = Math.max(1e-6, (hix-lox)/NB), wz = Math.max(1e-6, (hiz-loz)/NB);
+  var bk = new Array(NB*NB);
+  for(i=0;i<n;i++){
+    var o=i*9;
+    var ax=tris[o], az=tris[o+2], bx=tris[o+3], bz=tris[o+5], cx=tris[o+6], cz=tris[o+8];
+    var x0=Math.min(ax,bx,cx), x1=Math.max(ax,bx,cx);
+    var z0=Math.min(az,bz,cz), z1=Math.max(az,bz,cz);
+    var i0=Math.max(0,Math.floor((x0-lox)/wx)), i1=Math.min(NB-1,Math.floor((x1-lox)/wx));
+    var k0=Math.max(0,Math.floor((z0-loz)/wz)), k1=Math.min(NB-1,Math.floor((z1-loz)/wz));
+    for(var ii=i0;ii<=i1;ii++) for(var kk=k0;kk<=k1;kk++){
+      var bi=ii*NB+kk, lst=bk[bi];
+      if(!lst){ lst=bk[bi]=[]; }
+      lst.push(i);
+    }
+  }
+  pe._idx = {geo:g, n:n, tris:tris, lo:[lox,loy,loz], hi:[hix,hiy,hiz],
+             nb:NB, wx:wx, wz:wz, bk:bk};
+  pe._ptsLocal = null;      // 换了几何 → 采样点重算
+  return pe._idx;
+}
+/* 沿 +Y 数穿越次数：1 = 体内，0 = 体外，-1 = 恰好压在边/顶点上（结果不可信） */
+function cmRayParity(idx, x, y, z){
+  var lo=idx.lo, hi=idx.hi;
+  if(x<lo[0] || x>hi[0] || z<lo[2] || z>hi[2] || y<lo[1] || y>hi[1]) return 0;
+  var ix=Math.floor((x-lo[0])/idx.wx), iz=Math.floor((z-lo[2])/idx.wz);
+  if(ix<0) ix=0; if(ix>=idx.nb) ix=idx.nb-1;
+  if(iz<0) iz=0; if(iz>=idx.nb) iz=idx.nb-1;
+  var lst = idx.bk[ix*idx.nb+iz];
+  if(!lst) return 0;
+  var T=idx.tris, cnt=0, amb=false, e2=1e-9;
+  for(var q=0;q<lst.length;q++){
+    var o=lst[q]*9;
+    var ax=T[o], ay=T[o+1], az=T[o+2];
+    var bx=T[o+3], by=T[o+4], bz=T[o+5];
+    var cx=T[o+6], cy=T[o+7], cz=T[o+8];
+    var e1x=bx-ax, e1z=bz-az, e2x=cx-ax, e2z=cz-az;
+    var den = e1x*e2z - e1z*e2x;
+    if(den > -1e-12 && den < 1e-12) continue;      // 三角形投影退化成一条线
+    var wx0=x-ax, wz0=z-az;
+    var uu=(wx0*e2z - wz0*e2x)/den;
+    var vv=(e1x*wz0 - e1z*wx0)/den;
+    if(uu < -e2 || vv < -e2 || (1-uu-vv) < -e2) continue;
+    if(Math.abs(uu)<1e-7 || Math.abs(vv)<1e-7 || Math.abs(1-uu-vv)<1e-7) amb=true;
+    var yh = ay + uu*(by-ay) + vv*(cy-ay);
+    if(yh > y) cnt++;
+  }
+  if(amb) return -1;
+  return (cnt & 1) ? 1 : 0;
+}
+function cmInsideBody(pe, p){
+  /* 用局部坐标：网格只有平移，没有旋转/缩放 */
+  return cmInsideBodyAt(pe, p.x - pe.x, p.y - pe.y, p.z - pe.z);
+}
+function cmInsideBodyAt(pe, x, y, z){
+  var idx = cmBodyIndex(pe);
+  if(!idx) return false;
+  var t = cmRayParity(idx, x, y, z);
+  /* 正好压在棱/顶点上时换一个"几乎同一点"再算（差 0.006mm，肉眼与几何都无差别） */
+  if(t < 0) t = cmRayParity(idx, x+0.0037, y+0.0011, z+0.0053);
+  return t === 1;
+}
+/* 体内采样点（给分块用）。两个来源：
+   ① 贴面内缩点：每个三角形的形心沿法向退回 0.3mm —— 薄片/复杂形状也一定采到；
+   ② 包围盒网格点：保证模型内部（不贴面）也有点，连通性拆分才不会把一块切成碎片。
+   结果按局部坐标缓存（拖动只改位置，不动形状）。 */
+function cmBodyPoints(pe){
+  var idx = cmBodyIndex(pe);
+  if(!idx) return [];
+  if(!pe._ptsLocal){
+    var out=[], T=idx.tris, n=idx.n, i;
+    var stride = Math.max(1, Math.ceil(n/260));
+    for(i=0;i<n;i+=stride){
+      var o=i*9;
+      var ax=T[o], ay=T[o+1], az=T[o+2];
+      var ux=T[o+3]-ax, uy=T[o+4]-ay, uz=T[o+5]-az;
+      var vx=T[o+6]-ax, vy=T[o+7]-ay, vz=T[o+8]-az;
+      var nx=uy*vz-uz*vy, ny=uz*vx-ux*vz, nz=ux*vy-uy*vx;
+      var nl=Math.sqrt(nx*nx+ny*ny+nz*nz);
+      if(!(nl>1e-12)) continue;
+      var gx=(ax+T[o+3]+T[o+6])/3, gy=(ay+T[o+4]+T[o+7])/3, gz=(az+T[o+5]+T[o+8])/3;
+      var inset=0.3;
+      var px=gx-nx/nl*inset, py=gy-ny/nl*inset, pz=gz-nz/nl*inset;
+      var t=cmRayParity(idx,px,py,pz);
+      if(t<0) t=cmRayParity(idx,px+0.0037,py+0.0011,pz+0.0053);
+      if(t===1) out.push([px,py,pz]);
+    }
+    var lo=idx.lo, hi=idx.hi, NL=10;
+    var sx=Math.max(1e-6,hi[0]-lo[0]), sy=Math.max(1e-6,hi[1]-lo[1]), sz=Math.max(1e-6,hi[2]-lo[2]);
+    for(var a2=0;a2<NL;a2++) for(var b2=0;b2<NL;b2++) for(var c2=0;c2<NL;c2++){
+      var qx=lo[0]+sx*(a2+0.5)/NL, qy=lo[1]+sy*(b2+0.5)/NL, qz=lo[2]+sz*(c2+0.5)/NL;
+      if(cmRayParity(idx,qx,qy,qz)===1) out.push([qx,qy,qz]);
+    }
+    var cx=(lo[0]+hi[0])/2, cy=(lo[1]+hi[1])/2, cz=(lo[2]+hi[2])/2;
+    if(cmRayParity(idx,cx,cy,cz)===1) out.push([cx,cy,cz]);
+    if(out.length > 1000){
+      var st2=Math.ceil(out.length/1000), keep=[];
+      for(i=0;i<out.length;i+=st2) keep.push(out[i]);
+      out=keep;
+    }
+    pe._ptsLocal = out;
+  }
+  var res=[], ox=pe.x, oy=pe.y, oz=pe.z;
+  for(var q2=0;q2<pe._ptsLocal.length;q2++){
+    var A=pe._ptsLocal[q2];
+    res.push(new THREE.Vector3(A[0]+ox, A[1]+oy, A[2]+oz));
+  }
+  return res;
+}
+/* 世界坐标几何（点选模式下分块网格用它画）——位置是分开的，所以复制一份再平移，
+   不能直接拿网格自己的数组（translate 会改到原件）。 */
+function cmBodyGeoWorld(pe){
+  var src = pe.mesh.geometry, pos = src.attributes.position;
+  var g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(new Float32Array(pos.array), 3));
+  if(src.attributes.normal){
+    g.setAttribute("normal", new THREE.Float32BufferAttribute(new Float32Array(src.attributes.normal.array), 3));
+  }
+  g.translate(pe.x, pe.y, pe.z);
+  g.computeBoundingBox(); g.computeBoundingSphere();
+  return g;
+}
+/* 平面 (nv,d) 与自建模型的截面（2D 凸包，供封盖裁切用）——
+   直接拿网格三角形与平面求交，取所有交点做凸包：350 面只要几百次乘加，
+   比"在平面内撒网格点再逐个点内判定"快两个数量级，且形状精确。 */
+function cmSectionPoly2D(pe, nv, d){
+  var idx = cmBodyIndex(pe);
+  var B = planeBasis(nv, d);
+  if(!idx) return {B:B, poly:[]};
+  if(!_cmCapCache) _cmCapCache = {};
+  var sig = pe._id + "|" + nv.x.toFixed(6) + "|" + nv.y.toFixed(6) + "|" +
+            nv.z.toFixed(6) + "|" + d.toFixed(6);
+  if(_cmCapCache[sig]) return _cmCapCache[sig];
+  /* 世界平面换到"减掉实例位置"的局部坐标：n·p_local = d - n·pos */
+  var dl = d - (nv.x*pe.x + nv.y*pe.y + nv.z*pe.z);
+  var T = idx.tris, pts = [], i, e;
+  for(i=0;i<idx.n;i++){
+    var o=i*9;
+    var da = nv.x*T[o]   + nv.y*T[o+1] + nv.z*T[o+2]   - dl;
+    var db = nv.x*T[o+3] + nv.y*T[o+4] + nv.z*T[o+5]   - dl;
+    var dc = nv.x*T[o+6] + nv.y*T[o+7] + nv.z*T[o+8]   - dl;
+    if((da>0&&db>0&&dc>0) || (da<0&&db<0&&dc<0)) continue;     // 整片在同一侧
+    var vs=[[o,da],[o+3,db],[o+6,dc]];
+    for(var k=0;k<3;k++){
+      if(Math.abs(vs[k][1]) < 1e-9) pts.push([T[vs[k][0]], T[vs[k][0]+1], T[vs[k][0]+2]]);
+    }
+    var es=[[o,o+3,da,db],[o+3,o+6,db,dc],[o+6,o,dc,da]];
+    for(e=0;e<3;e++){
+      var ia=es[e][0], ib=es[e][1], ua=es[e][2], ub=es[e][3];
+      if((ua>0&&ub>0)||(ua<0&&ub<0)) continue;
+      if(Math.abs(ua-ub) < 1e-12) continue;
+      var tt = ua/(ua-ub);
+      pts.push([T[ia]+(T[ib]-T[ia])*tt, T[ia+1]+(T[ib+1]-T[ia+1])*tt,
+                T[ia+2]+(T[ib+2]-T[ia+2])*tt]);
+    }
+  }
+  var poly=[], O=B.O, U=B.U, V=B.V;
+  for(i=0;i<pts.length;i++){
+    var px=pts[i][0]+pe.x-O.x, py=pts[i][1]+pe.y-O.y, pz=pts[i][2]+pe.z-O.z;
+    poly.push([px*U.x+py*U.y+pz*U.z, px*V.x+py*V.y+pz*V.z]);
+  }
+  var res = {B:B, poly: poly.length>=3 ? hull2D(poly) : []};
+  _cmCapCache[sig] = res;
+  return res;
+}
 function cmPlace(id, pos){
   var rec=null;
   customModels.forEach(function(r){ if(r.id===id) rec=r; });
@@ -8157,13 +8511,52 @@ function cmPlace(id, pos){
   var pts=[], arr=geo.attributes.position, st=Math.max(1,Math.floor(arr.count/240));
   for(var i=0;i<arr.count;i+=st) pts.push(new THREE.Vector3().fromBufferAttribute(arr,i));
   placedCustom.push({id:id,x:mesh.position.x,y:mesh.position.y,z:mesh.position.z,
+                     _id:++_cmBodySeq,        // v33.64：稳定实例号（cell key 里的 m<id>）
                      mesh:mesh,pts:pts,label:"自建·"+rec.name});
   var fitted=false;
   try{ fitted=cmEnsureVisible(idx); }catch(e){ }
   cmRenderChips();
+  /* v33.64：点选模式下放进来，要立刻参与分块，否则"放了但点不动" */
+  cmCellsDirty();
   cmToast("已放置「"+rec.name+"」"+(fitted?"（视角已自动拉远）":"")+
           "：拖住模型可移动，再点一次名字可再放一个", 3000);
   return idx;
+}
+/* 自建模型增删/移动后要让分块重算（点选模式下才会有可见效果）。
+   ★ 只置脏、不在这里同步重建：放置/收回是用户点一下的动作，同步重建会卡 150~200ms，
+     交给渲染循环下一帧做（肉眼无缝），放置耗时也就不会被拖慢。 */
+function cmCellsDirty(){
+  if(mode !== "pick") return;
+  cellsDirty = true;
+}
+/* 拖动过程中先看外壳（分块暂时藏掉），松手再重建 —— 拖动才顺滑 */
+function cmDragPreviewShell(pe){
+  if(!pe || !pe.mesh) return;
+  pe.mesh.visible = true;
+  if(!cellGroup) return;
+  cellGroup.children.forEach(function(ch){
+    var ck = ch.userData && ch.userData.ck;
+    if(!ck) return;
+    var c = cellOfKey(ck);
+    if(c && c.ownerPe === pe) ch.visible = false;
+  });
+}
+function cmDropPlaced(idx){
+  var pe = placedCustom[idx];
+  if(!pe) return false;
+  if(customGroup && pe.mesh) customGroup.remove(pe.mesh);
+  if(pe.mesh) pe.mesh.traverse(function(ch){       // 网格 + 挂在下面的棱线一起回收
+    if(ch.geometry) ch.geometry.dispose();
+    if(ch.material) ch.material.dispose();
+  });
+  placedCustom.splice(idx, 1);
+  placedCustom.forEach(function(pc, i){ if(pc.mesh && pc.mesh.userData) pc.mesh.userData.cmIdx = i; });
+  pendingCustom = null; customDrag = null;
+  cmCellsDirty();
+  cmRenderChips(); cmRenderList();
+  var nm = pe.label ? pe.label.replace(/^自建·/, "") : "模型";
+  cmToast("已收回「" + nm + "」" + (placedCustom.length ? ("，还剩 " + placedCustom.length + " 个") : ""), 2400);
+  return true;
 }
 function cmClearPlaced(){
   if(customGroup){
@@ -8176,6 +8569,7 @@ function cmClearPlaced(){
   }
   placedCustom=[];
   pendingCustom=null; customDrag=null;
+  cmCellsDirty();
   cmRenderChips();
 }
 /* 来源标签：库是全局的，"来源"只是告诉用户这个模型是在哪张卡里做出来的 */
@@ -8221,6 +8615,21 @@ function cmRenderChips(){
   mg.addEventListener("click",function(){ cmOpenOverlay(cmOwner); });
   row.appendChild(mg);
   if(placedCustom.length){
+    /* v33.64：不再只能"收回全部" —— 每个放出来的实例一枚小卡片，点一下就只收回它。
+       （库里的模型不受影响，想再放点上面的名字即可，误点也不会丢东西。） */
+    placedCustom.forEach(function(pe,i){
+      var nm = String(pe.label || "自建模型").replace(/^自建·/, "");
+      if(nm.length > 8) nm = nm.slice(0,8) + "…";
+      var b=document.createElement("button");
+      b.classList.add("chip"); b.classList.add("cm-chip"); b.classList.add("cm-drop");
+      b.setAttribute("data-cm-act","drop");
+      b.setAttribute("data-cm-placed", String(i));
+      b.setAttribute("data-cm-name", pe.label || nm);
+      b.textContent = "№" + (i+1) + " " + nm + " ✕";
+      b.title = "收回这一个";
+      b.addEventListener("click", function(){ cmDropPlaced(i); });
+      row.appendChild(b);
+    });
     var cl=document.createElement("button");
     cl.classList.add("chip"); cl.classList.add("cm-chip"); cl.classList.add("ghost");
     cl.setAttribute("data-cm-act","clear");
@@ -8274,6 +8683,25 @@ function cmRenderList(){
   var info=document.getElementById("cmInfo");
   if(info) info.textContent="全部功能卡通用（参数化草图建模台除外）· 点「放置」进入场景拖动，共 "+
     customModels.length+" 个";
+  /* v33.64：把"当前场景里放着的实例"单独列在最上面，可以逐个收回 */
+  if(placedCustom.length){
+    var pt=document.createElement("div"); pt.className="cm-sect";
+    pt.textContent="已放置 "+placedCustom.length+" 个（可逐个收回）";
+    box.appendChild(pt);
+    placedCustom.forEach(function(pe,i){
+      var it=document.createElement("div"); it.className="cm-item cm-placed";
+      var nm=String(pe.label||"自建模型").replace(/^自建·/,"");
+      it.innerHTML='<div class="cm-ihead"><b>№'+(i+1)+' '+escapeHtmlSafe(nm)+'</b>'+
+        '<span class="cm-scope">已放置</span></div>'+
+        '<div class="cm-idesc">位置 x='+(Math.round(pe.x*10)/10)+' y='+(Math.round(pe.y*10)/10)+
+        ' z='+(Math.round(pe.z*10)/10)+'</div>'+
+        '<div class="cm-irow"><button data-act="drop" data-placed="'+i+'">收回这一个</button></div>';
+      box.appendChild(it);
+    });
+    var ps=document.createElement("div"); ps.className="cm-sect";
+    ps.textContent="库里的模型";
+    box.appendChild(ps);
+  }
   if(!list.length){
     var e=document.createElement("div"); e.className="cm-empty";
     e.innerHTML="还没有自建模型。<br>进入任意功能卡，把处理后的实体点左侧「存为自建」保存。";
@@ -8339,6 +8767,7 @@ function cmRemove(id){
     placedCustom.splice(k,1);
   }
   placedCustom.forEach(function(pc,i){ if(pc.mesh) pc.mesh.userData.cmIdx=i; });
+  cmCellsDirty();
   cmPersist(); cmRenderHome(); cmRenderChips(); cmRenderList();
 }
 function cmInitUI(){
@@ -8381,6 +8810,13 @@ function cmInitUI(){
     }
     if(!b) return;
     var id=b.getAttribute("data-id"), act=b.getAttribute("data-act");
+    /* v33.64：逐个收回（这一条没有 data-id，必须在"查库里记录"之前处理） */
+    if(act==="drop"){
+      var pidx = parseInt(b.getAttribute("data-placed"),10);
+      if(pidx >= 0) cmDropPlaced(pidx);
+      cmRenderList();
+      return;
+    }
     var rec=null; customModels.forEach(function(r){ if(r.id===id) rec=r; });
     if(!rec) return;
     if(act==="place"){
@@ -8415,8 +8851,11 @@ window.ConeLabCustom = {
   list: function(){ return customModels.map(function(r){ return {id:r.id,name:r.name,owner:r.owner,
       scope:r.scope,tris:r.tris,pLen:r.geo.p.length}; }); },
   place: cmPlace,
-  placed: function(){ return placedCustom.map(function(p){ return {id:p.id,x:p.x,y:p.y,z:p.z}; }); },
+  placed: function(){ return placedCustom.map(function(p){ return {id:p.id,x:p.x,y:p.y,z:p.z,
+      bodyId:p._id,label:p.label}; }); },
   clearPlaced: cmClearPlaced,
+  /* v33.64：只收回某一个实例（下标与 placed() 一致） */
+  dropPlaced: cmDropPlaced,
   clearLibrary: function(){ customModels=[]; cmPersist(); cmClearPlaced(); cmRenderHome(); cmRenderChips(); cmRenderList(); },
   openDlg: cmOpenDlg,
   renderHome: cmRenderHome,

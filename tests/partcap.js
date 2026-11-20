@@ -39,12 +39,13 @@ check("partSectionPoly2D 有缓存（_partCapCache）",
       /var _partCapCache = \{\};/.test(HTML));
 check("buildCellVis 每次重建时清空封盖缓存",
       /function buildCellVis\(\)\{\s*_partCapCache = \{\};/.test(HTML));
+/* v33.64：cellCaps 多了一路"自建模型截面"，断言改成"ownerPart 优先走部件截面" */
 check("cellCaps 对 ownerPart 块路由到 partSectionPoly2D",
-      /var sp = ownPr \? partSectionPoly2D\(ownPr, o\.nv, o\.d\)\s*:\s*sectionPoly2D\(o\.nv, o\.d, 96\);/.test(HTML));
+      /var sp = ownPr \? partSectionPoly2D\(ownPr, o\.nv, o\.d\)[\s\S]{0,140}?sectionPoly2D\(o\.nv, o\.d, 96\);/.test(HTML));
 check("封盖材质跳过自己部件的 spec（不被自己挖空）",
       /setPartSpecs\(capMat, capPartSpecs\.filter\(function\(_, ii\)\{ return ii !== c\.ownerPart; \}\)\);/.test(HTML));
 check("封盖颜色跟随部件配色（变实青色 / 未变实青蓝）",
-      /color: ownPart \? \(tintPart \? 0x12d6c8 : 0x8fd8ff\) : 0xdd7a34/.test(HTML));
+      /color: ownPart \? \(tintPart \? 0x12d6c8 : 0x8fd8ff\) : \(ownCm \? 0xd9832f : 0xdd7a34\)/.test(HTML));
 
 /* ============ 二、复现用户场景（实验室 + 圆柱 + 两面） ============ */
 section("二、实验室复现：正放圆柱 + 侧垂面30° + 水平面");

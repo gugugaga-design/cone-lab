@@ -182,6 +182,146 @@ check("换到「圆柱」卡后卡片行还是同一批模型（不按卡归属�
   chipsCyl.filter(function (c) { return c.id; }).length === 1 && chipsCyl[0].name === "测试永久",
   JSON.stringify(chipsCyl.map(function (c) { return c.name; })));
 
+section("G 自建模型参与「点选保留部分」（v33.64）");
+/* 用户需求："这些自建模型与正常添加出来的模型拼装的 3d 模型一样，
+   可以对其使用点选保留部分功能（不要和相贯体一样，之前是我说错了）" */
+R("applyShape('cone'); resetView(); window.ConeLabCustom.clearPlaced();");
+R("cmPlace('" + perm.id + "',[100,0,0])");
+/* 只放模型、没有任何面/贯穿体/部件：也要分出一块，让整块可点 */
+R("mode='pick'; refresh();");
+let gCells = JSON.parse(R("JSON.stringify(cells.map(function(c){return {k:c.key,own:!!c.ownerPe,sel:c.sel};}))"));
+check("只放自建模型也能分出一块（可点）", gCells.length === 1 && gCells[0].own, JSON.stringify(gCells));
+check("分块 key 带自建模型位 m…:1", /\|m\d+:1$/.test(gCells[0].k), gCells[0].k);
+check("点选模式下自建模型外壳被分块替代（外壳隐藏）", R("placedCustom[0].mesh.visible") === false);
+check("主立体没被切开时仍然正常显示（不会跟分块重复）", R("coneF.visible") === true);
+/* 分块用的是模型自己的几何（放在 x=100，半宽 30 → 70..130） */
+const gbox = JSON.parse(R(`(function(){
+  var m=null;
+  cellGroup.children.forEach(function(c){ if(c.userData.front && !c.userData.cap && c.userData.ck) m=c; });
+  if(!m) return "null";
+  m.geometry.computeBoundingBox();
+  var b=m.geometry.boundingBox;
+  return JSON.stringify([+b.min.x.toFixed(1),+b.max.x.toFixed(1)]);
+})()`));
+check("分块几何就是自建模型本身（世界坐标一致）",
+  gbox && Math.abs(gbox[0] - 70) < 1.5 && Math.abs(gbox[1] - 130) < 1.5, JSON.stringify(gbox));
+/* 加一个水平面（过模型中部）→ 自建模型被切成上下两块，和主立体一视同仁 */
+R("faces=[{type:'horiz',ang:0,x:0,y:0,z:0,on:true,flip:false}]; refresh();");
+gCells = JSON.parse(R("JSON.stringify(cells.map(function(c){return {k:c.key,own:!!c.ownerPe,pl:c.planes.length};}))"));
+const gOwn = gCells.filter(function (c) { return c.own; });
+check("启用的面同样把自建模型切开（内外各一块）", gOwn.length === 2,
+  JSON.stringify(gCells.map(function (c) { return c.k; })));
+check("每块都带自己的裁剪平面", gOwn.every(function (c) { return c.pl >= 1; }));
+/* 切面必须封盖（不然隐藏一块就看穿到内部 = "不是实体"） */
+const gcap = JSON.parse(R(`(function(){
+  var area=0, n=0;
+  cellGroup.children.forEach(function(c){
+    if(!c.userData.cap) return;
+    var cel = cellOfKey(c.userData.ck);
+    if(!cel || !cel.ownerPe) return;
+    var pos=c.geometry.attributes.position, i;
+    for(i=0;i<pos.count;i+=3){
+      var p0=new THREE.Vector3().fromBufferAttribute(pos,i), p1=new THREE.Vector3().fromBufferAttribute(pos,i+1),
+          p2=new THREE.Vector3().fromBufferAttribute(pos,i+2);
+      area += p1.clone().sub(p0).cross(p2.clone().sub(p0)).length()*0.5;
+    }
+    n++;
+  });
+  return JSON.stringify({n:n, area:Math.round(area*10)/10});
+})()`));
+check("自建模型块的切面有封盖（实体感）", gcap.n >= 1 && gcap.area > 50, JSON.stringify(gcap));
+/* 轻点模型上半部分 → 只隐藏那一块 */
+R("if(cellsDirty){rebuildCells();buildCellVis();cellsDirty=false;}");
+const gscreen = JSON.parse(R(`(function(){
+  var pe=placedCustom[0]; pe.mesh.geometry.computeBoundingBox();
+  var hy=(pe.mesh.geometry.boundingBox.max.y - pe.mesh.geometry.boundingBox.min.y)/2;
+  var v=new THREE.Vector3(pe.x, pe.y+hy*0.55, pe.z).project(activeCam);
+  var r=renderer.domElement.getBoundingClientRect();
+  return JSON.stringify([r.left+(v.x*0.5+0.5)*r.width, r.top+(-v.y*0.5+0.5)*r.height]);
+})()`));
+function tapAt(x, y) {
+  (canvas._listeners.pointerdown || []).forEach(function (f) { f.call(canvas, ev("pointerdown", x, y)); });
+  (app.__window._listeners.pointerup || []).forEach(function (f) { f.call(app.__window, ev("pointerup", x, y)); });
+}
+tapAt(gscreen[0], gscreen[1]);
+const gAfter = JSON.parse(R("JSON.stringify(cells.filter(function(c){return c.ownerPe;}).map(function(c){return {k:c.key,sel:c.sel};}))"));
+check("点自建模型的某一块 → 就隐藏那一块", gAfter.some(function (c) { return c.sel === false; }),
+  JSON.stringify(gAfter));
+check("隐藏状态记进 pickSel（切模式再回来还在）",
+  Object.keys(JSON.parse(R("JSON.stringify(pickSel)"))).some(function (k) { return /\|m\d+:\d$/.test(k); }));
+const gGhost = R(`(function(){
+  var n=0;
+  cellGroup.children.forEach(function(m){
+    if(!m.userData.ck || m.userData.cap) return;
+    var cel=cellOfKey(m.userData.ck);
+    if(cel && cel.ownerPe && cel.sel===false) n++;
+  });
+  return n;
+})()`);
+check("被隐藏的那块画成幽灵层（可再点回来）", gGhost >= 2, gGhost);
+/* 原地再点一次 → 恢复 */
+tapAt(gscreen[0], gscreen[1]);
+check("再点一次能恢复显示",
+  R("cells.filter(function(c){return c.ownerPe;}).every(function(c){return c.sel!==false;})") === true);
+/* 切回"显示全部"：外壳必须回来 */
+R("mode='all'; refresh();");
+check("回到其他模式后自建模型外壳显示回来", R("placedCustom[0].mesh.visible") === true);
+
+section("H 只收回某一个放置出来的自建模型");
+R("window.ConeLabCustom.clearPlaced();");
+R("cmPlace('" + perm.id + "',[100,0,0]); cmPlace('" + perm.id + "',[0,60,0])");
+let hPlaced = st().placed;
+check("放了两个实例", hPlaced.length === 2, JSON.stringify(hPlaced.map(function (p) { return p.bodyId; })));
+check("卡片行按实例列出「收回这一个」",
+  chips().filter(function (c) { return c.act === "drop"; }).length === 2,
+  chips().filter(function (c) { return c.act === "drop"; }).length);
+check("实例号跟着下标走（№1 / №2）",
+  R(`(function(){
+    var row=document.getElementById('cmChipRow'), out=[];
+    for(var i=0;i<row.children.length;i++){
+      if(row.children[i].getAttribute('data-cm-act')==='drop'){
+        out.push(row.children[i].textContent + '@' + row.children[i].getAttribute('data-cm-placed'));
+      }
+    }
+    return out.join('|');
+  })()`).indexOf("№1") >= 0);
+const keepBody = hPlaced[1].bodyId;
+R(`(function(){
+  var row=document.getElementById('cmChipRow'), t=null;
+  for(var i=0;i<row.children.length;i++){
+    var b=row.children[i];
+    if(b.getAttribute('data-cm-act')==='drop' && b.getAttribute('data-cm-placed')==='0'){ t=b; break; }
+  }
+  t.dispatch('click');
+})()`);
+hPlaced = st().placed;
+check("点「№1 ✕」只收回第一个", hPlaced.length === 1 && hPlaced[0].bodyId === keepBody,
+  JSON.stringify(hPlaced.map(function (p) { return p.bodyId; })));
+check("另一个模型仍在场", R("placedCustom.length === 1 && placedCustom[0].mesh.parent === customGroup") === true);
+check("收回后卡片行只剩一个「收回这一个」",
+  chips().filter(function (c) { return c.act === "drop"; }).length === 1);
+check("不写库：库里的模型还在", st().lib.length >= 1, st().lib.length);
+/* 管理浮层里也能逐个收回（从卡片行末尾的「管理 / 改名」进） */
+R(`(function(){
+  var row=document.getElementById('cmChipRow'), t=null;
+  for(var i=0;i<row.children.length;i++){
+    if(row.children[i].getAttribute('data-cm-act')==='manage'){ t=row.children[i]; break; }
+  }
+  t.dispatch('click');
+})()`);
+const hOverlay = R(`(function(){
+  var box=document.getElementById('cmList'), out=[];
+  Array.prototype.forEach.call(box.querySelectorAll('button'), function(b){
+    if(b.getAttribute('data-act')==='drop') out.push(b.getAttribute('data-placed'));
+  });
+  return out.join(',');
+})()`);
+check("管理页列出「收回这一个」按钮", hOverlay === "0", hOverlay);
+R("cmCloseOverlay(); window.ConeLabCustom.clearPlaced();");
+check("收回全部仍然可用", st().placed.length === 0);
+/* 后面 E/F 段接着用「圆柱」卡（本段开头切到了圆锥） */
+R("applyShape('cyl');");
+
 section("E 建模台成品也进同一个库");
 const html = fs.readFileSync(path.join(__dirname, "../src/index.html"), "utf8");
 const inlines = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(function (m) { return m[1]; });
