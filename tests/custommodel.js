@@ -86,6 +86,10 @@ check("放在主立体右侧且留间隙、不压在主立体上",
   "x=" + s.placed[0].x + " 半宽=" + half.hx.toFixed(2));
 const chipPerm = chips().filter(function (c) { return c.name === "测试永久"; })[0];
 check("放好后对应卡片高亮（on）", !!(chipPerm && chipPerm.on), JSON.stringify(chipPerm));
+/* 用户报的「放了看不见」：放完必须真的在画面里（必要时自适应会把视角拉远） */
+R("if(viewAnimFinish) viewAnimFinish(); camera.updateMatrixWorld(true);");
+check("放置后模型完整落在画面里",
+  R("cmBoxVisible(new THREE.Box3().setFromObject(placedCustom[0].mesh),0.96)") === true);
 check("进入吸附模型清单", R("snapModelList().some(function(m){return m.kind==='custom';})"));
 /* 用真实 pointer 事件拖它：屏幕坐标取模型中心投影 */
 const screen = JSON.parse(R(`(function(){
