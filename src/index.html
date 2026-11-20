@@ -11752,14 +11752,14 @@ function featureRevolve() {
  * ------------------------------------------------------------------------ */
 function edgeSegments() {
   if (!S.mesh || !S.mesh.geometry) return [];
-  var eg = new CL_T.EdgesGeometry(S.mesh.geometry, 24), a = eg.getAttribute("position"), out = [];
-  for (var i = 0; i < a.count; i += 2) {
-    out.push({
-      a: new CL_T.Vector3(a.getX(i), a.getY(i), a.getZ(i)),
-      b: new CL_T.Vector3(a.getX(i + 1), a.getY(i + 1), a.getZ(i + 1))
-    });
-  }
-  eg.dispose(); return out;
+  /* v33.60：拾取棱必须与**绘制**的棱同源。旧版用 THREE 内置 EdgesGeometry(geo,24)，
+     没有 v33.59 加进 solidEdges 的曲面分段缝过滤 —— 圆角圆柱面 16 段的母线
+     全被当成可选棱（两棱圆角后实测 6228 段 vs 绘制 15 段），点一条棱就被
+     edgeChainFrom 沿碎片串成 6 段/47mm 的错误链（用户："可选棱边异常增多"）。
+     改用同一个 solidEdges：看得见的棱才点得中。 */
+  var pts = solidEdges(S.mesh.geometry, 24), out = [];
+  for (var i = 0; i + 1 < pts.length; i += 2) out.push({ a: pts[i], b: pts[i + 1] });
+  return out;
 }
 function pickEdgeAt(clientX, clientY) {
   if (!S.r3 || !S.edges) return null;

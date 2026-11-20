@@ -421,6 +421,30 @@ check("圆角面无梳齿接缝棱线（v33.58 是 31 条）", comb.seam <= 2 &&
   "total=" + comb.total + " seam=" + comb.seam);
 
 /* ---------------------------------------------------------------- */
+section("J. v33.60 可选棱与绘制棱同源（两棱交汇后可选棱不再暴涨）");
+R(RESET);
+R('addEntity("rect",{x0:-25,y0:-25,x1:25,y1:25},true);');
+R('S.feature.start=0; S.feature.end=25; S.feature.dir=1; featureExtrude("add");');
+pick([0, -25, 25]); R("fillet(5);");
+pick([25, -25, 0]); R("fillet(5);");
+const pickEq = JSON.parse(R(`(function(){
+  var pk=edgeSegments(), p=solidEdges(S.mesh.geometry,24);
+  return JSON.stringify({pick:pk.length,draw:p.length/2});
+})()`));
+/* 修前：可选 6228 段（EdgesGeometry 无 seam 过滤）、绘制 15 段。 */
+check("可选棱数 == 绘制棱数", pickEq.pick === pickEq.draw && pickEq.pick < 40,
+  "pick=" + pickEq.pick + " draw=" + pickEq.draw);
+const chainP = JSON.parse(R(`(function(){
+  var segs=edgeSegments(),best=null,bd=1e9,M=new THREE.Vector3(25,-12.5,25);
+  segs.forEach(function(s){var q=s.a.clone().add(s.b).multiplyScalar(0.5).distanceTo(M);if(q<bd){bd=q;best=s;}});
+  var ch=edgeChainFrom(best),len=0;
+  ch.forEach(function(s){len+=s.a.distanceTo(s.b);});
+  return JSON.stringify({n:ch.length,len:+len.toFixed(2)});
+})()`));
+check("点竖棱不再串入碎棱（总长 20mm）", Math.abs(chainP.len - 20) < 0.5 && chainP.n <= 4,
+  "n=" + chainP.n + " len=" + chainP.len);
+
+/* ---------------------------------------------------------------- */
 section("H. v33.57 bug3：撤销不动视角（zoom≠1 时视锥不再被反复除以 zoom）");
 R("S.cam3.zoom = 2.4; S.cam3.updateProjectionMatrix(); resizeView();");
 const FR = `(function(){ return JSON.stringify({
