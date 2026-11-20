@@ -525,7 +525,8 @@
     <div id="cmRowNote">还没有自建模型。在上面把实体处理好后，点左侧「存为自建」保存，
       出来就能在这里点名字放置（暂时保存只在本页有效，永久保存下次进来还在）。</div>
     <div class="tip" style="padding:0 12px 6px" id="cmRowTip">
-      放出来的模型和拼装部件一样<b>参与「点选保留部分」</b>：切到点选模式后轻点它的某一块就能单独隐藏。
+      放出来的模型和拼装部件一样<b>参与「点选保留部分」</b>：切到点选模式后轻点它的某一块就能单独隐藏；
+      即使它和拼装部件/主立体<b>重叠</b>，各方也能各自被面切开、互不相盖。
       行里 <b>№n ✕</b> 是"只收回这一个"，「收回全部」才一次清空。
     </div>
     <div class="tip" style="padding:0 12px 12px">
@@ -2837,6 +2838,9 @@ function buildCellVis(){
   if(flipped) cellGeo.rotateZ(Math.PI);
   cellGroup = new THREE.Group();
   var actC = activeFaceData(), csC = activeCyls(), psC = activeParts();
+  /* v33.65：自建模型体素表（在别的所有者材质里把模型体积挖出来）。
+     atlas 按在场实例重打；槽号与 msC 下标严格对应。 */
+  var msC = activeCustomBodies(), maskTex = msC.length ? cmBuildMaskAtlas(msC) : null;
   var capSpecs = csC.map(function(cc){ return cylSpecOf(cc, 1); });   // 盖子上把贯穿体全部挖掉
   var capPartSpecs = psC.map(function(pp){ return partSpecOf(pp, 1); });  // 盖子上把部件挖掉
   /* 主立体几何是否可用（lab 模式没有主立体 → geo 是空几何，0 顶点） */
@@ -2924,6 +2928,8 @@ function buildCellVis(){
       colF = 0xf08c42;                            // 主立体分块：模型橙（不变）
       colB = 0x4b2a14;
     }
+    var ownSpec0 = c.ownerPart;
+    var cmSpecs = msC.length ? cmSpecsOf(c, msC) : null;   // v33.65：一块算一次，正反/封盖共用
     var mk = function(front){
       var sel = c.sel;
       var m = new THREE.Mesh(useGeo, front
@@ -2947,9 +2953,12 @@ function buildCellVis(){
          实测：圆台顶面 127 个像素被判成"外部"而丢弃（就是那片麻点）。
          所以这里**跳过自己所属部件的那条 spec**（其余部件/相贯体照常裁）。
          几何上等价（点本来就在部件内部），但去掉了边界抖动。 */
-      var ownSpec = c.ownerPart;
+      var ownSpec = ownSpec0;
       var partSpecs = (c.parts || []).filter(function(_, ii){ return ii !== ownSpec; });
       setPartSpecs(m.material, partSpecs);    // v33：部件体积参与裁剪（跳过自身）
+      /* v33.65：自建模型体积也参与裁剪（跳过自身那一块）。这是"部件/主立体与自建模型
+         重叠时仍能各自被面割掉"的关键：之前 m 位只管拾取不管渲染，各方都画完整几何。 */
+      setCmSpecs(m.material, cmSpecs, maskTex);
       /* v33.16（用户反馈"模型有些中空 / 实体的地方没显现"的根因）：
          v33.9 为了解决"贯体变实的相贯体挡住分块网格"，把分块网格和封盖都设成
          **depthTest=false**，靠 renderOrder 硬压在最上层。但关掉深度测试后，
@@ -2983,6 +2992,8 @@ function buildCellVis(){
            跳过自己那一条（与上面分块网格 mk() 里 skip ownSpec 同一套逻辑），
            其余部件/贯穿体的裁剪照常保留。 */
         setPartSpecs(capMat, capPartSpecs.filter(function(_, ii){ return ii !== c.ownerPart; }));
+        /* v33.65：封盖同样要被自建模型体积裁掉，否则重叠处盖子盖住模型 */
+        setCmSpecs(capMat, cmSpecs, maskTex);
         capMat.depthTest = true;
         var cm = new THREE.Mesh(g, capMat);
         cm.renderOrder = 1012;
@@ -3381,6 +3392,14 @@ var CYL_GLSL = [
 "uniform vec4 uPartQ[4];",  // 共轭四元数（把世界向量转回部件局部）
 "uniform vec4 uPartD[4];",  // 尺寸：含义随类型（见 partSpecOf）
 "uniform vec4 uPartK[4];",  // x = +1 保留外部 / -1 保留内部
+/* v33.65：自建模型的体素占用表。任意网格没法写成 GLSL 公式，改成查表。
+   槽号与 activeCustomBodies() 下标一致；世界坐标减实例位置即体素局部坐标。 */
+"uniform sampler2D uCmMask;",
+"uniform vec4 uCmPos[6];",  // xyz = 实例世界位置, w = 启用
+"uniform vec4 uCmLo[6];",   // xyz = 模型局部包围盒最小角
+"uniform vec4 uCmSz[6];",   // xyz = 模型局部包围盒尺寸
+"uniform vec4 uCmKeep[6];", // x = +1 保留体外 / -1 保留体内 / 0 关闭
+"uniform vec4 uCmAtlas;",   // x=atlas宽 y=atlas高 z=每轴格数 w=槽列数(3)
 "varying vec3 vCylW;",
 "vec3 qrot(vec4 q, vec3 v){",
 "  vec3 t = 2.0 * cross(q.xyz, v);",
@@ -3408,6 +3427,21 @@ var CYL_GLSL = [
 "    return rho <= rr*cos(half3)/cos(a); }",
 "  float t=(q.y+d.y)/(2.0*d.y);",                                             // 槽（近似）
 "  return (abs(q.z)<=d.z && q.y<=0.0 && rho<=d.x && rho>=d.y);",
+"}",
+/* v33.65：查体素表判"世界点是否落在某个自建模型体内"。
+   atlas 布局：6 个槽按 3列×2行 摆；每槽把 N 张 Z 切片按 8列×6行 平铺。 */
+"bool cmMaskInside(int i, vec3 w){",
+"  float kp = uCmKeep[i].x;",
+"  if(abs(kp) < 0.5 || uCmPos[i].w < 0.5) return false;",
+"  vec3 sz = max(uCmSz[i].xyz, vec3(1e-6));",
+"  vec3 f = (w - uCmPos[i].xyz - uCmLo[i].xyz) / sz;",
+"  if(f.x<0.0 || f.x>=1.0 || f.y<0.0 || f.y>=1.0 || f.z<0.0 || f.z>=1.0) return false;",
+"  float N = uCmAtlas.z, COLS = uCmAtlas.w;",
+"  vec3 v = floor(clamp(f, 0.0, 0.999999) * N);",
+"  float tx = mod(v.z, 8.0), ty = floor(v.z / 8.0);",
+"  float sx = mod(float(i), COLS), sy = floor(float(i) / COLS);",
+"  vec2 px = vec2((sx*8.0+tx)*N + v.x + 0.5, (sy*8.0+ty)*N + v.y + 0.5);",
+"  return texture2D(uCmMask, px / uCmAtlas.xy).r > 0.5;",
 "}",
 "void cylDiscard(){",
 "  for(int i=0;i<4;i++){",
@@ -3475,13 +3509,25 @@ var CYL_GLSL = [
 "      if(pk > 0.0){ if(pins) discard; } else { if(!pins) discard; }",
 "    }",
 "  }",
+"  /* v33.65：自建模型体积裁剪（与部件同一语义）。 */",
+"  for(int t=0;t<6;t++){",
+"    float ck = uCmKeep[t].x;",
+"    if(abs(ck) > 0.5){",
+"      bool ins = cmMaskInside(t, vCylW);",
+"      if(ck > 0.0){ if(ins) discard; } else { if(!ins) discard; }",
+"    }",
+"  }",
 "}"
 ].join("\n");
 function cylUniformsOf(mat){
   if(mat.userData.cylU) return mat.userData.cylU;
   var A4 = function(){ return [new THREE.Vector4(), new THREE.Vector4(), new THREE.Vector4(), new THREE.Vector4()]; };
+  var A6 = function(){ return [new THREE.Vector4(), new THREE.Vector4(), new THREE.Vector4(),
+                               new THREE.Vector4(), new THREE.Vector4(), new THREE.Vector4()]; };
   var u = { uCylC:{value:A4()}, uCylA:{value:A4()}, uCylU:{value:A4()}, uCylV:{value:A4()}, uCylL:{value:A4()},
-            uPartC:{value:A4()}, uPartQ:{value:A4()}, uPartD:{value:A4()}, uPartK:{value:A4()} };
+            uPartC:{value:A4()}, uPartQ:{value:A4()}, uPartD:{value:A4()}, uPartK:{value:A4()},
+            uCmMask:{value:null}, uCmPos:{value:A6()}, uCmLo:{value:A6()},
+            uCmSz:{value:A6()}, uCmKeep:{value:A6()}, uCmAtlas:{value:new THREE.Vector4(1536,1024,64,3)} };
   mat.userData.cylU = u;
   mat.onBeforeCompile = function(shader){
     shader.uniforms.uCylC = u.uCylC;
@@ -3493,6 +3539,12 @@ function cylUniformsOf(mat){
     shader.uniforms.uPartQ = u.uPartQ;
     shader.uniforms.uPartD = u.uPartD;
     shader.uniforms.uPartK = u.uPartK;
+    shader.uniforms.uCmMask = u.uCmMask;
+    shader.uniforms.uCmPos = u.uCmPos;
+    shader.uniforms.uCmLo = u.uCmLo;
+    shader.uniforms.uCmSz = u.uCmSz;
+    shader.uniforms.uCmKeep = u.uCmKeep;
+    shader.uniforms.uCmAtlas = u.uCmAtlas;
     shader.vertexShader = "varying vec3 vCylW;\n" + shader.vertexShader.replace(
       "#include <project_vertex>",
       "#include <project_vertex>\n  vCylW = (modelMatrix * vec4(transformed, 1.0)).xyz;");
@@ -3500,7 +3552,7 @@ function cylUniformsOf(mat){
       "#include <clipping_planes_fragment>",
       "#include <clipping_planes_fragment>\n  cylDiscard();");
   };
-  mat.customProgramCacheKey = function(){ return "cylclip5"; };   // v33.29：着色器变了（新相贯体类型码），缓存键必须跟着变
+  mat.customProgramCacheKey = function(){ return "cylclip6"; };   // v33.65：加了自建模型体素裁剪（6 槽）
   mat.needsUpdate = true;
   return u;
 }
@@ -3558,6 +3610,26 @@ function setPartSpecs(mat, specs){
       u.uPartQ.value[i].set(0,0,0,1);
       u.uPartD.value[i].set(0,0,0,0);
       u.uPartK.value[i].set(0,0,0,0);
+    }
+  }
+}
+/* v33.65：把本块的体素裁剪规格写进材质。槽号 = activeCustomBodies() 下标。 */
+function setCmSpecs(mat, specs, tex){
+  var u = cylUniformsOf(mat);
+  u.uCmMask.value = tex || null;
+  u.uCmAtlas.value.set(CM_ATLAS_W, CM_ATLAS_H, CM_GRID_N, CM_COLS);
+  for(var i=0;i<CM_SLOTS;i++){
+    var s = specs && specs[i];
+    if(s){
+      u.uCmPos.value[i].set(s.pos.x, s.pos.y, s.pos.z, 1);
+      u.uCmLo.value[i].set(s.lo[0], s.lo[1], s.lo[2], 0);
+      u.uCmSz.value[i].set(s.size[0], s.size[1], s.size[2], 0);
+      u.uCmKeep.value[i].set(s.keep, 0, 0, 0);
+    } else {
+      u.uCmPos.value[i].set(0,0,0,0);
+      u.uCmLo.value[i].set(0,0,0,0);
+      u.uCmSz.value[i].set(1,1,1,0);
+      u.uCmKeep.value[i].set(0,0,0,0);
     }
   }
 }
@@ -8286,6 +8358,154 @@ function cmSolidEdges(g, deg){
 var _cmBodySeq = 0;        // 实例号分配器（收回不回收，保证旧 key 不会撞上新模型）
 var _cmCapCache = null;    // 本轮的"平面 ∩ 自建模型"截面缓存（buildCellVis 时清空）
 
+/* ============ v33.65：把自建模型体素化给着色器（任意网格的"点内判定"）============
+   部件能在主立体材质里被挖掉，是因为 partSpecOf 把球/方/锥/…解析成 GLSL 公式；
+   自建模型是任意网格，没法写进公式 —— 以前只能靠"用模型自己的几何画它那一块"，
+   于是模型与拼装部件/主立体重叠时，别人那几块没有"体积裁剪"，照样把重叠区画出来：
+   点掉模型的块，别人的块还在原地 → 用户看到"部件没被面割掉"。
+
+   方案：一次性把网格烘成 N³ 占用体素（沿 +Y 射线奇偶，扫描线填区间），
+   打包成一张 2D atlas 纹理传进片元；着色器按世界坐标查表 → 任意网格也能像部件一样
+   在别人的材质里"挖掉"（或反过来只保留体内那块）。
+   网格只平移不旋转 → 世界坐标减掉实例位置就是体素局部坐标。
+
+   体素表按【模型记录】缓存在 rec._cmMask（同一模型放多个实例共用），
+   atlas 每轮 buildCellVis 按【在场实例】重打（位置进 uniform，不进纹理）。 */
+var CM_GRID_N = 64;        // 每条轴 64 格（面少的模型锥尖也采得到）
+var CM_SLOTS   = 6;        // 同时参与裁剪的实例上限（与 PARTS_MAX=6 对齐）
+var CM_TC = 8, CM_TR = 8;  // 64 张 Z 切片按 8×8 平铺
+var CM_COLS = 3, CM_ROWS = 2;
+var CM_ATLAS_W = CM_COLS*CM_TC*CM_GRID_N, CM_ATLAS_H = CM_ROWS*CM_TR*CM_GRID_N;
+var _cmAtlasTex = null, _cmBlankTex = null, _cmAtlasSig = null;
+
+function cmMaskOf(rec){
+  if(!rec || !rec.geo || !rec.geo.p || !rec.geo.p.length) return null;
+  if(rec._cmMask) return rec._cmMask;
+  var p = rec.geo.p, n = Math.floor(p.length/9), lo=[1e18,1e18,1e18], hi=[-1e18,-1e18,-1e18], i,j;
+  for(i=0;i<p.length;i+=3) for(j=0;j<3;j++){
+    var v=p[i+j]; if(v<lo[j])lo[j]=v; if(v>hi[j])hi[j]=v;
+  }
+  if(n===0 || !isFinite(lo[0])) return null;
+  var N=CM_GRID_N;
+  var sx=Math.max(1e-9,(hi[0]-lo[0])/N), sy=Math.max(1e-9,(hi[1]-lo[1])/N),
+      sz=Math.max(1e-9,(hi[2]-lo[2])/N);
+  /* (x,z) 分桶（与 cmBodyIndex 同一套路） */
+  var NB=32, wx=Math.max(1e-9,(hi[0]-lo[0])/NB), wz=Math.max(1e-9,(hi[2]-lo[2])/NB);
+  var bk=new Array(NB*NB);
+  for(i=0;i<n;i++){
+    var o=i*9, ax=p[o], az=p[o+2], bx=p[o+3], bz=p[o+5], cx=p[o+6], cz=p[o+8];
+    var x0=Math.min(ax,bx,cx), x1=Math.max(ax,bx,cx), z0=Math.min(az,bz,cz), z1=Math.max(az,bz,cz);
+    var i0=Math.max(0,Math.floor((x0-lo[0])/wx)), i1=Math.min(NB-1,Math.floor((x1-lo[0])/wx));
+    var k0=Math.max(0,Math.floor((z0-lo[2])/wz)), k1=Math.min(NB-1,Math.floor((z1-lo[2])/wz));
+    for(var ii=i0;ii<=i1;ii++) for(var kk=k0;kk<=k1;kk++){
+      var bi=ii*NB+kk; if(!bk[bi]) bk[bi]=[]; bk[bi].push(i);
+    }
+  }
+  var grid=new Uint8Array(N*N*N), ys=new Array(64);
+  for(var ix=0; ix<N; ix++){
+    var x=lo[0]+sx*(ix+0.5);
+    var bx0=Math.min(NB-1,Math.max(0,Math.floor((x-lo[0])/wx)));
+    for(var iz=0; iz<N; iz++){
+      var z=lo[2]+sz*(iz+0.5);
+      var lst=bk[bx0*NB+Math.min(NB-1,Math.max(0,Math.floor((z-lo[2])/wz)))];
+      if(!lst || !lst.length) continue;
+      var cnt=0;
+      for(var q=0;q<lst.length;q++){
+        var o=lst[q]*9;
+        var ax=p[o], ay=p[o+1], az=p[o+2];
+        var e1x=p[o+3]-ax, e1z=p[o+5]-az, e2x=p[o+6]-ax, e2z=p[o+8]-az;
+        var den=e1x*e2z-e1z*e2x;
+        if(den>-1e-12 && den<1e-12) continue;
+        var dx=x-ax, dz=z-az;
+        var uu=(dx*e2z-dz*e2x)/den, vv=(e1x*dz-e1z*dx)/den;
+        if(uu<-1e-7 || vv<-1e-7 || 1-uu-vv<-1e-7) continue;
+        ys[cnt++]=ay+uu*(p[o+4]-ay)+vv*(p[o+7]-ay);
+      }
+      if(cnt<2) continue;
+      ys.length=cnt; ys.sort(function(a,b){ return a-b; });
+      /* 扫描线：y 从小到大，每越过一个三角面就翻转奇偶 —— 比"每格重数三角"快 N 倍 */
+      var iy0=Math.max(0,Math.floor((ys[0]-lo[1])/sy)), iy1=Math.min(N-1,Math.ceil((ys[cnt-1]-lo[1])/sy));
+      var ptr=0, parity=0;
+      for(var iy=iy0; iy<=iy1; iy++){
+        var yy=lo[1]+sy*(iy+0.5);
+        while(ptr<cnt && ys[ptr]<=yy){ ptr++; parity^=1; }
+        /* 从最低交点以下开始，parity=0（外）；跨过奇数个面后在体内 */
+        if(parity) grid[(iz*N+iy)*N+ix]=1;
+      }
+    }
+  }
+  /* v33.65：一格膨胀 —— 表面附近的格若判到外面，会在切口留一圈散点。
+     把"体内"向邻格扩一格（≈1~2mm），换取表面连续；边界略粗但看不出来。 */
+  var dil = new Uint8Array(N*N*N);
+  for(var dz=0; dz<N; dz++) for(var dy=0; dy<N; dy++) for(var dx=0; dx<N; dx++){
+    if(grid[(dz*N+dy)*N+dx]){
+      for(var a=-1;a<=1;a++) for(var b=-1;b<=1;b++) for(var c=-1;c<=1;c++){
+        var x2=dx+a, y2=dy+b, z2=dz+c;
+        if(x2>=0&&x2<N&&y2>=0&&y2<N&&z2>=0&&z2<N) dil[(z2*N+y2)*N+x2]=1;
+      }
+    }
+  }
+  rec._cmMask={grid:dil, lo:lo, hi:hi, size:[hi[0]-lo[0],hi[1]-lo[1],hi[2]-lo[2]], n:n};
+  return rec._cmMask;
+}
+/* 把在场实例各自模型的体素表打进同一张 atlas。槽号严格等于 activeCustomBodies() 下标，
+   setCmSpecs 也按这个下标取 —— 保证纹理里放的和 uniform 里说的是同一个模型。 */
+function cmBuildMaskAtlas(ms){
+  if(!_cmBlankTex){
+    _cmBlankTex=new THREE.DataTexture(new Uint8Array([0,0,0,255]),1,1,THREE.RGBAFormat);
+    _cmBlankTex.needsUpdate=true;
+  }
+  if(!ms || !ms.length) return _cmBlankTex;
+  /* 内容只取决于"哪些模型记录占了哪些槽"，与实例位置/隐藏状态无关
+     （位置走 uniform）→ 点一下隐藏一块不必重打 1536×1024 的图。 */
+  var sig = ms.slice(0,CM_SLOTS).map(function(pe){ return pe.id; }).join("|");
+  if(sig === _cmAtlasSig && _cmAtlasTex) return _cmAtlasTex;
+  _cmAtlasSig = sig;
+  if(_cmAtlasTex){ _cmAtlasTex.dispose(); _cmAtlasTex=null; }
+  var W=CM_ATLAS_W, H=CM_ATLAS_H, data=new Uint8Array(W*H*4);
+  for(var q=0;q<W*H;q++) data[q*4+3]=255;
+  var used=false;
+  for(var s=0; s<ms.length && s<CM_SLOTS; s++){
+    var pe=ms[s], rec=null;
+    for(var r=0;r<customModels.length;r++) if(customModels[r].id===pe.id){ rec=customModels[r]; break; }
+    var mask=cmMaskOf(rec); if(!mask) continue;
+    used=true;
+    var sox=(s%CM_COLS)*CM_TC*CM_GRID_N, soy=Math.floor(s/CM_COLS)*CM_TR*CM_GRID_N;
+    var G=mask.grid, N=CM_GRID_N;
+    for(var iz=0; iz<N; iz++){
+      var tx=iz%CM_TC, ty=Math.floor(iz/CM_TC);
+      for(var iy=0; iy<N; iy++){
+        var src=(iz*N+iy)*N, dst=((soy+ty*N+iy)*W + sox+tx*N);
+        for(var ix=0; ix<N; ix++) data[(dst+ix)*4]=G[src+ix] ? 255 : 0;
+      }
+    }
+  }
+  if(!used) return _cmBlankTex;
+  _cmAtlasTex=new THREE.DataTexture(data,W,H,THREE.RGBAFormat);
+  _cmAtlasTex.minFilter=_cmAtlasTex.magFilter=THREE.NearestFilter;
+  _cmAtlasTex.wrapS=_cmAtlasTex.wrapT=THREE.ClampToEdgeWrapping;
+  _cmAtlasTex.needsUpdate=true;
+  return _cmAtlasTex;
+}
+/* 本块对每个自建模型的裁剪约束：keep=+1 保留体外，-1 保留体内，0 不裁。
+   自己的几何（ownerPe）必须跳过 —— 它的顶点就压在模型表面上，查表必然抖动。 */
+function cmSpecsOf(c, ms){
+  var specs=new Array(CM_SLOTS);
+  /* ★ 只有当这块【真的用模型自己的几何画】时才能跳过它自己的体素裁剪：
+     buildCellVis 里 ownerPart 比 ownerPe 优先，所以"既在部件内又在模型内"的块
+     画的是部件几何 —— 这时必须照样裁，否则它画满整个部件，把其它块全盖住。 */
+  var skipSelf = (c.ownerPart == null && c.ownerPe != null);
+  for(var i=0;i<ms.length && i<CM_SLOTS;i++){
+    if(skipSelf && c.ownerPe === ms[i]) continue;
+    var rec=null;
+    for(var r=0;r<customModels.length;r++) if(customModels[r].id===ms[i].id){ rec=customModels[r]; break; }
+    var mask=cmMaskOf(rec); if(!mask) continue;
+    var bb=(c.bodies||{})[ms[i]._id], keep=bb ? bb.keep : 1;
+    specs[i]={pos:new THREE.Vector3(ms[i].x,ms[i].y,ms[i].z),
+              lo:mask.lo, size:mask.size, keep:keep};
+  }
+  return specs;
+}
 function activeCustomBodies(){
   var arr = [];
   for(var i=0;i<placedCustom.length;i++){

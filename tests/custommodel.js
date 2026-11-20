@@ -343,6 +343,77 @@ check("收回全部仍然可用", st().placed.length === 0);
 /* 后面 E/F 段接着用「圆柱」卡（本段开头切到了圆锥） */
 R("applyShape('cyl');");
 
+
+section("I 重叠时各方都能被面割掉（v33.65）");
+/* 用户需求："拼装模型中的模型与自建模型重叠并添加一个面去切割时，
+   使用点选保留部分，无法让模型拼装的模型被面割掉。"
+   根因：分块 key 的 m 位只进拾取判定，没进着色器 → 各块都画完整几何、互相盖住。
+   修法：把网格烘成体素表进片元，m 位像 p 位一样真正裁剪体积。 */
+R("applyShape('cone'); parts.length=0; cyls.length=0; faces.length=0; addPart('box');");
+R("parts[0].w=44;parts[0].h=42;parts[0].d=44;parts[0].x=0;parts[0].y=0;parts[0].z=0;buildParts();");
+const iData = R("JSON.stringify(cmGeomData(cmBakeTriangles()))");
+const iRec = JSON.parse(R("JSON.stringify(cmSaveGeometry(" + iData + ",'perm','重叠测试','cone'))"));
+R("cmPlace('" + iRec.id + "',[0,0,0])");
+R("faces=[{type:'horiz',ang:0,x:0,y:0,z:0,on:true,flip:false}]; mode='pick'; refresh();");
+R("if(cellsDirty){rebuildCells();buildCellVis();cellsDirty=false;}");
+/* 面 id 随前面测试递增，不能写死 f1 */
+const iFace = R("activeFaceData()[0].id");
+const iAbove = "f" + iFace + ":1|";
+const iCells = JSON.parse(R("JSON.stringify(cells.map(function(c){return {k:c.key,own:!!c.ownerPart,cm:!!c.ownerPe};}))"));
+check("重叠时同侧仍有部件内/外两套块",
+  iCells.some(function (c) { return /p\d+:3\|m\d+:0/.test(c.k) }) &&
+  iCells.some(function (c) { return /p\d+:3\|m\d+:1/.test(c.k) }),
+  iCells.length + " 块");
+/* 体素表：形状正确、位置正确 */
+const iMask = JSON.parse(R(`(function(){var m=cmMaskOf(customModels[customModels.length-1]);
+  return JSON.stringify({n:m.n,lo:m.lo,hi:m.hi,inside:cmInsideBody(placedCustom[0],new THREE.Vector3(0,0,0)),
+    out:cmInsideBody(placedCustom[0],new THREE.Vector3(200,0,0))});})()`));
+check("自建模型被烘成体素表（带包围盒）",
+  iMask.n > 0 && iMask.hi[0] > iMask.lo[0] && iMask.inside === true && iMask.out === false,
+  JSON.stringify(iMask));
+/* 关键：既在部件内又在模型内的块，画的是部件几何 → 必须照样查体素表 */
+const iKeep = R(`(function(){var keep=null;
+  cellGroup.children.forEach(function(m){
+    if(!m.userData.front) return;
+    var k=m.userData.ck;
+    if(k.indexOf('${iAbove}')===0 && /p\\d+:3\\|m\\d+:1/.test(k)){
+      var u=m.material.userData.cylU;
+      if(u) for(var s=0;s<6;s++) if(u.uCmPos.value[s].w>0.5 && u.uCmKeep.value[s].x<0) keep=k;
+    }
+  });
+  return keep;})()`);
+check("部件∩模型 的块带着 keep=-1 体素规格（不再画满整个部件）", !!iKeep, iKeep || "none");
+/* 体素纹理确实进了材质（有槽、有图、尺寸对） */
+const iTex = R(`(function(){var u=null;cellGroup.children.forEach(function(m){
+    if(m.userData.front && m.userData.ck.indexOf('${iAbove}')===0)u=m.material.userData.cylU;});
+  return u && u.uCmMask.value ? u.uCmMask.value.image.width+'x'+u.uCmMask.value.image.height : 'none';})()`);
+check("体素 atlas 已写进分块材质", /^\d+x\d+$/.test(iTex), iTex);
+/* 隐藏"面上 + 部件内 + 模型外"那几块 → 这些块消失，其余块还在 */
+const iHidden = R(`(function(){var n=0,m=0;cells.forEach(function(c){
+    if(c.key.indexOf('${iAbove}')===0 && /p\\d+:3\\|m\\d+:0/.test(c.key)){
+      c.sel=false; pickSel[c.key]=false; n++; if(c.sel===false) m++;
+    }
+  });buildCellVis();return n+'/'+m;})()`);
+check("点选隐藏的是指定那几块（部件被面割掉）", /^(\d+)\/\1$/.test(iHidden) && parseInt(iHidden, 10) > 0, iHidden);
+check("被隐藏块画成幽灵（可再点回来）",
+  R(`(function(){var n=0;cellGroup.children.forEach(function(m){
+    if(m.userData.front && m.userData.ck.indexOf('${iAbove}')===0 && m.material.opacity<0.1)n++;
+  });return n;})()`) >= 2);
+/* 反向：模型自己的块也能单独隐藏，切口仍然封盖 */
+R(`(function(){cells.forEach(function(c){
+    if(c.key.indexOf('${iAbove}')===0 && c.ownerPart==null && c.ownerPe){ c.sel=false; pickSel[c.key]=false; }
+  });buildCellVis();})()`);
+check("自建模型自己的上半块也能单独隐藏",
+  R(`cells.some(function(c){return c.key.indexOf('${iAbove}')===0 && c.ownerPe && c.sel===false;})`) === true);
+check("仍然有封盖（切面是实体）",
+  R("cellGroup.children.filter(function(m){return m.userData.cap;}).length") >= 1);
+/* 清场：放置收回 + 把本段新建的库记录删掉，别把后面 E 段的库长度断言顶偏 */
+R(`(function(){for(var i=customModels.length-1;i>=0;i--){
+    if(customModels[i].id==='${iRec.id}'){ customModels.splice(i,1); break; }
+  }
+  cmPersist(); cmRenderHome(); cmRenderChips();
+  parts.length=0; faces.length=0; applyShape('cyl');})()`);
+
 section("E 建模台成品也进同一个库");
 const html = fs.readFileSync(path.join(__dirname, "../src/index.html"), "utf8");
 const inlines = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(function (m) { return m[1]; });
