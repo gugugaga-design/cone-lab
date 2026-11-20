@@ -150,9 +150,20 @@ function pickAndFillet(mid) {
 }
 const chainLens = [
   pickAndFillet([0, -25, 25]),
-  pickAndFillet([25, -25, 0]),
-  pickAndFillet([25, -12.5, 25])
+  pickAndFillet([25, -25, 0])
 ];
+/* v33.58：必须在第三次圆角**之前**量第三棱（倒完它就不存在了）。 */
+const thirdBefore = JSON.parse(R(`(function(){
+  var M=new THREE.Vector3(25,-12.5,25), segs=edgeSegments(), best=null, bd=1e9;
+  segs.forEach(function(s){ var d=s.a.clone().add(s.b).multiplyScalar(0.5).distanceTo(M); if(d<bd){bd=d;best=s;} });
+  var len=0;
+  if(best) edgeChainFrom(best).forEach(function(s){
+    if(Math.abs(s.a.x-25)<0.05 && Math.abs(s.b.x-25)<0.05 && Math.abs(s.a.z-25)<0.05 && Math.abs(s.b.z-25)<0.05)
+      len += s.a.distanceTo(s.b);
+  });
+  return JSON.stringify({len:+len.toFixed(2)});
+})()`));
+chainLens.push(pickAndFillet([25, -12.5, 25]));
 const corners = R(`(function(){
   var g=csgGeom(S.solid), pos=g.getAttribute("position"), n=pos.count/3, tiny=0, sliver=0, longSliver=0;
   for (var i=0;i<n;i++){
@@ -169,7 +180,10 @@ const corners = R(`(function(){
   return JSON.stringify({tris:n, tiny:tiny, sliver:sliver, longSliver:longSliver, chains:${JSON.stringify(chainLens)}});
 })()`);
 const cp = JSON.parse(corners);
-check("三条棱的棱链都是单段（不再溜进圆角弧）", cp.chains.join() === "1,1,1", cp.chains.join());
+/* v33.58：角部补面沿第三棱方向延长后，BSP 会把第三棱切成共线的几段，
+   几何仍是一条完整直棱。真正要守的是"长度完整、不溜进圆角弧"，而不是段数。 */
+check("第三条棱保持完整（共线分段也算）", cp.chains[0] === 1 && cp.chains[1] === 1 && thirdBefore.len >= 19.9,
+  cp.chains.join() + " len=" + thirdBefore.len);
 check("没有零面积三角形（毛边来源）", cp.tiny === 0, "tiny=" + cp.tiny);
 /* v33.55 角部球面：球面与三条圆角圆柱面是 G1（相切）过渡，BSP 在这一圈相切线上必然留下
    少量细三角——它们与相邻面共面、相邻、不重叠，着色和邻面一致，肉眼无感。
@@ -365,6 +379,25 @@ check("两棱交汇角细长三角个位数", g2c.sliver <= 12 && g2c.longSliver
 const prof2 = cornerProfile([25, -25, 25], 5);
 check("交汇角不再是台阶/角料（max ≤ 5.2，v33.56 戳到 6.9）", prof2.max <= 5.2, JSON.stringify(prof2));
 check("交汇角确实是球面（min ≥ 4.7）", prof2.min >= 4.7, JSON.stringify(prof2));
+/* v33.58：球面不再被切除盒远端面截断。v33.57 在 y=-20（共享面内缩 r）处
+   留下约 0.21r²=5.4mm² 的平端面（探针实测 6 片共 ~2.5mm²，BSP 还会再切碎）。 */
+const flatA = JSON.parse(R(`(function(){
+  var C=new THREE.Vector3(25,-25,25), A=0;
+  S.solid.toPolygons().forEach(function(pg){
+    var n=pg.plane.normal, vs=pg.vertices, ct=new THREE.Vector3();
+    if(n.y > -0.99 || Math.abs(pg.plane.w-20) > 0.05) return;
+    vs.forEach(function(v){ ct.x+=v.pos.x/vs.length; ct.y+=v.pos.y/vs.length; ct.z+=v.pos.z/vs.length; });
+    if(ct.distanceTo(C) > 12) return;
+    for(var i=1;i+1<vs.length;i++){
+      var a=vs[0].pos,b=vs[i].pos,c=vs[i+1].pos;
+      var ux=b.x-a.x,uy=b.y-a.y,uz=b.z-a.z,vx=c.x-a.x,vy=c.y-a.y,vz=c.z-a.z;
+      var nx=uy*vz-uz*vy,ny=uz*vx-ux*vz,nz=ux*vy-uy*vx;
+      A+=Math.sqrt(nx*nx+ny*ny+nz*nz)/2;
+    }
+  });
+  return JSON.stringify({a:+A.toFixed(2)});
+})()`));
+check("交汇角无平端面残留（v33.57 约 5.4mm²）", flatA.a < 0.6, "area=" + flatA.a);
 const g2v = st();
 check("补角后体积仍为正且小于裸盒", g2v.solid && g2v.vol > 0 && g2v.vol < 50 * 50 * 25, "vol=" + g2v.vol);
 

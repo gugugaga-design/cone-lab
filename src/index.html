@@ -11623,7 +11623,7 @@ function rebuildFeatures() {
   if (solid && filletChains.length > 1 && !_noCornerCut) {
     findFilletCorners(filletChains).forEach(function (cn) {
       try {
-        var ball = cornerBallCutter(solid, cn.pt, cn.r);
+        var ball = cornerBallCutter(solid, cn.pt, cn.r, cn.ext);
         if (!ball) return;
         var vb = csgVolume(ball);
         if (!(vb > 1e-6)) return;
@@ -12299,7 +12299,7 @@ function octaBallPolys(cc, rad, ax, ay, az, n) {
           }
   return P;
 }
-function cornerBallCutter(csg, pt, r) {
+function cornerBallCutter(csg, pt, r, extAxis) {
   var pts = cornerPlanesNear(csg, pt, Math.max(r * 2.6, r + 2));
   if (pts.length < 3) return null;
   /* 挑三个两两近似垂直的面（盒角就是三张；圆柱棱端头会有近似同向的碎面，跳过） */
@@ -12336,7 +12336,52 @@ function cornerBallCutter(csg, pt, r) {
      又因为落在三根圆角圆柱的轴上且同半径，与三根圆柱面沿大圆相切。 */
   var cc = corner.clone().addScaledVector(u0, rad).addScaledVector(u1, rad).addScaledVector(u2, rad);
   var m = Math.max(0.15, Math.min(1.2, r * O.boxm));  // 往材料外多伸一点，避免与实体表面共面
-  var hi = rad;                                 // 盒的远端正好在 cc 的三个坐标面上（球的大圆就在那里）
+  /* v33.58：消除 v33.57 遗留的 0.21r² 平端面。
+     根因：旧切除盒三个方向都止于 u=r，而 2 链角在"未倒圆的第三棱"方向 u=r 处
+     两根圆柱面之间还有真材料（3 链角那里正好是第三根圆柱面，所以没这个洞），
+     球面被盒的远端平面硬切出一块平端面 r²(1−π/4)。
+     ★ 不能把盒直接延长到 2r —— 实测会啃掉实体内部一大块（盒∖球还有大片不在圆柱内的区域）。
+       要挖的只是「两根圆柱面之内、球面之外」的楔形角料：它在 u=r+δ 处的截面
+       是边长 2√(r²−δ²) 的方形减去内切圆的一角，到 u=2r 收缩为一点。
+     做法：延长盒 ∖ 球，再与**两根圆角圆柱**求交（圆柱轴 = 角点沿另两面法向各走 r，
+     正好与已有圆角面重合），只留下真正的角料。球面边界仍是精确大圆弧。 */
+  var hi = [rad, rad, rad], extK = -1;
+  if (extAxis) {
+    var uu = [u0, u1, u2], bestD = 0;
+    for (var uk = 0; uk < 3; uk++) {
+      var dd = Math.abs(uu[uk].dot(extAxis));
+      if (dd > bestD) { bestD = dd; extK = uk; }
+    }
+    if (extK >= 0 && bestD > 0.8) hi[extK] = 2 * rad;
+    else extK = -1;
+  }
+  /* v33.58：半圆"保留区"棱柱（角点 + 未倒圆棱方向 + 另一条棱方向）。
+     ★ 剖面是**半圆**不是四分之一圆：未知的 u_ext 必须能走到 2r，
+       只有 u_other 限制在 [0,r]（由局部盒负责）。用四分之一圆会把 u_ext
+       同样卡在 r，延长完全失效（实测第三棱仍被切成 3 段）。
+     圆弧与 filletProfile2D 同角度取样（8 段够用：16→8 面数减 1/4，视觉无差）。 */
+  function keptPrism(extK, along, other, r, m) {
+    var U = [u0, u1, u2], x1 = U[extK], y1 = U[other];
+    var a = x1.clone().cross(y1).normalize();          // = ±U[along]， extrusion 双向都覆盖
+    var sh = new CL_T.Shape();
+    for (var ai = 0; ai <= 8; ai++) {
+      var ang = Math.PI + Math.PI * ai / 8;            // (0,r) → (r,0) → (2r,r) 下半圆
+      var p = new CL_T.Vector2(r + r * Math.cos(ang), r + r * Math.sin(ang));
+      if (ai === 0) sh.moveTo(p.x, p.y); else sh.lineTo(p.x, p.y);
+    }
+    sh.lineTo(2 * r, r + 0.12); sh.lineTo(0, r + 0.12); sh.closePath();
+    /*  closing 边故意抬到 y=r+0.12：正好落在盒面 u_other=r 上会触发 BSP 共面
+       null-plane 崩溃（实测 Cannot read properties of null (reading 'flip')）。 */
+    var lo = -m - 0.1, hi = r + 0.1;
+    var sgn = a.dot(U[along]) >= 0 ? 1 : -1;
+    var z0 = sgn > 0 ? lo : -hi;                 // a 可能与 U[along] 反向
+    var g = new CL_T.ExtrudeGeometry(sh, { depth: hi - lo, bevelEnabled: false, curveSegments: 8 });
+    var mtx = new CL_T.Matrix4().makeBasis(x1, y1, a);
+    mtx.setPosition(corner.clone().addScaledVector(a, z0));
+    g.applyMatrix4(mtx);
+    var c = geomToCSG(g); g.dispose();
+    return c;
+  }
   /* ① 局部盒（以**精确角点**为原点、u0/u1/u2 为轴，范围 [−m, r]）。
      盒内材料本来就只有"没倒圆的角块"，所以盒 ∖ 球 减掉的正是它，不会碰别的材料。
      绕序照抄 CSG.cube 的面表（(u0,u1,u2) 已右手化，逐位映射后法向自动朝外）。 */
@@ -12345,7 +12390,7 @@ function cornerBallCutter(csg, pt, r) {
   for (dz2 = 0; dz2 < 2; dz2++)
     for (dy2 = 0; dy2 < 2; dy2++)
       for (dx2 = 0; dx2 < 2; dx2++)
-        V.push(LP(dx2 ? hi : -m, dy2 ? hi : -m, dz2 ? hi : -m));
+        V.push(LP(dx2 ? hi[0] : -m, dy2 ? hi[1] : -m, dz2 ? hi[2] : -m));
   var boxP = [
     [0, 4, 6, 2], [1, 3, 7, 5], [0, 1, 5, 4], [2, 6, 7, 3], [0, 2, 3, 1], [4, 5, 7, 6]
   ].map(function (idx) {
@@ -12358,7 +12403,13 @@ function cornerBallCutter(csg, pt, r) {
        切点）上，那一圈小平面几乎与实体大面共面 → BSP 一次拉出 45mm 碎三角。
        八面体细分球的六个极点正好落在 ±u0/±u1/±u2，切点周围的面片倾斜 90°/n，永远不会近平行。 */
   var ball = CL_CSG.fromPolygons(octaBallPolys(cc, rad, u0, u1, u2, O.sphN));
-  return box.subtract(ball);
+  var cut = box.subtract(ball);
+  if (extK >= 0) {
+    var oth = [0, 1, 2].filter(function (k) { return k !== extK; });
+    var pr1 = keptPrism(extK, oth[0], oth[1], rad, m), pr2 = keptPrism(extK, oth[1], oth[0], rad, m);
+    cut = cut.intersect(pr1).intersect(pr2);
+  }
+  return cut;
 }
 /* 两条（无限长）直线的最近点对；平行/近亲时返回 null。
    s/t 是沿各自方向的行进量（可正可负）。 */
@@ -12407,12 +12458,18 @@ function findFilletCorners(chains) {
       out.forEach(function (u) { if (u.pt.distanceTo(c) < 0.5) dup = u; });
       if (dup) {
         dup.r = Math.min(dup.r, r); dup.hits++;
-        if (dup.cis.indexOf(ends[j].ci) < 0) dup.cis.push(ends[j].ci);
+        if (dup.cis.indexOf(ends[j].ci) < 0) {
+          dup.cis.push(ends[j].ci);
+          dup.ext = null;   // 3 链角：三根棱都倒圆了，没有"未倒圆的第三棱"可延伸
+        }
         if (dup.rs.indexOf(ends[j].r) < 0) dup.rs.push(ends[j].r);
         dup.reach = Math.max(dup.reach, Math.abs(tmp.s), Math.abs(tmp.t));
       }
       else out.push({ pt: c, r: r, hits: 1, cis: [ends[i].ci, ends[j].ci],
         rs: [ends[i].r, ends[j].r],
+        /* v33.58：两条棱方向叉乘 = 它们共同所在平面（共享面）的法向 = 未倒圆的第三棱方向。
+           cornerBallCutter 只沿这个方向把球面盒延长到 2r，消除平端面。 */
+        ext: ends[i].d.clone().cross(ends[j].d),
         /* reach = 参与端到角点的最大延长量：≈0 说明两端都齐着角（flush），
            ≈r 说明至少一条链端被先做的圆角**截短**了（v33.57 bug2 的交汇角） */
         reach: Math.max(Math.abs(tmp.s), Math.abs(tmp.t)) });
