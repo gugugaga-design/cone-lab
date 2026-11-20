@@ -7768,29 +7768,160 @@ function cmBakeTriangles(){
   });
   return all;
 }
+/* ---------- 法向重算 ----------
+   v33.63：`cmTriList()` 烘出来的三角形 `n` 一律是 null，旧代码把它填成 (0,1,0)，
+   于是整个自建模型只有"朝上"一个法向 —— 屏幕上是一块**没有明暗转折的橙色板**，
+   用户看不出哪是切面、哪是侧面（截图："被切割线显示不出来"）。
+   这里按「位置焊接 + 24° 光滑组」重算：同一曲面（圆锥侧面 5.6° 一段）平滑，
+   切面/端面和侧面之间的真棱（>24°，与 solidEdges 的判据同阈值）断开，
+   于是切面自己有一块不一样的明暗，配合棱线就把特征显出来了。
+   位置键用 0.01mm（存盘精度）焊接，避免三角网里同一点因浮点抖动被判成两个。 */
+function cmNormalsFromPos(pos, triCount){
+  var out = new Array(triCount*9);
+  var tn = new Array(triCount), ar = new Array(triCount);
+  var i, k, o, a, b;
+  function pk(idx){
+    return pos[idx].toFixed(2)+"|"+pos[idx+1].toFixed(2)+"|"+pos[idx+2].toFixed(2);
+  }
+  for(i=0;i<triCount;i++){
+    o = i*9;
+    var ax=pos[o], ay=pos[o+1], az=pos[o+2];
+    var ux=pos[o+3]-ax, uy=pos[o+4]-ay, uz=pos[o+5]-az;
+    var vx=pos[o+6]-ax, vy=pos[o+7]-ay, vz=pos[o+8]-az;
+    var nx=uy*vz-uz*vy, ny=uz*vx-ux*vz, nz=ux*vy-uy*vx;
+    var l=Math.sqrt(nx*nx+ny*ny+nz*nz);
+    if(!(l>1e-12)){ tn[i]=[0,1,0]; ar[i]=0; continue; }   // 退化三角形：给个安全法向，面积权重 0
+    tn[i]=[nx/l,ny/l,nz/l]; ar[i]=l*0.5;
+  }
+  /* 并查集把"同一片光滑曲面"的三角形并成一组 */
+  var par=new Array(triCount);
+  for(i=0;i<triCount;i++) par[i]=i;
+  function find(x){
+    var r=x; while(par[r]!==r) r=par[r];
+    while(par[x]!==r){ var t=par[x]; par[x]=r; x=t; }
+    return r;
+  }
+  var edges={}, cosS=Math.cos(24*Math.PI/180);
+  for(i=0;i<triCount;i++){
+    var ks=[pk(i*9), pk(i*9+3), pk(i*9+6)];
+    for(k=0;k<3;k++){
+      a=ks[k]; b=ks[(k+1)%3];
+      var ek=(a<b)?(a+"#"+b):(b+"#"+a);
+      var lst=edges[ek];
+      if(!lst){ edges[ek]=[i]; continue; }
+      for(var q=0;q<lst.length;q++){
+        var o2=lst[q], n1=tn[o2], n2=tn[i];
+        if(n1[0]*n2[0]+n1[1]*n2[1]+n1[2]*n2[2] > cosS){
+          var ra=find(o2), rb=find(i);
+          if(ra!==rb) par[rb]=ra;
+        }
+      }
+      lst.push(i);
+    }
+  }
+  /* 每组内按顶点累积（面积加权），组之间不混合 */
+  var acc={};
+  for(i=0;i<triCount;i++){
+    var r=find(i), n=tn[i], w=ar[i]||1e-6;
+    for(k=0;k<3;k++){
+      var bi=i*9+k*3;
+      var kk=r+"|"+pk(bi);
+      var s=acc[kk]; if(!s){ s=acc[kk]=[0,0,0]; }
+      s[0]+=n[0]*w; s[1]+=n[1]*w; s[2]+=n[2]*w;
+    }
+  }
+  for(i=0;i<triCount;i++){
+    var r2=find(i);
+    for(k=0;k<3;k++){
+      var bi2=i*9+k*3;
+      var s2=acc[r2+"|"+pk(bi2)] || [0,1,0];
+      var L=Math.sqrt(s2[0]*s2[0]+s2[1]*s2[1]+s2[2]*s2[2])||1;
+      var o3=bi2;
+      out[o3]=s2[0]/L; out[o3+1]=s2[1]/L; out[o3+2]=s2[2]/L;
+    }
+  }
+  return out;
+}
+/* 零面积三角形（裁剪/布尔切出来的残片，法向 0）既占体积又会把相邻边误判成 90° 棱，
+   在 bake 阶段就丢掉。判据用叉积模长（=2×面积），阈值 1e-6 只吃掉真退化，不动细长片。 */
+function cmTriArea2(t){
+  var ux=t[1].p.x-t[0].p.x, uy=t[1].p.y-t[0].p.y, uz=t[1].p.z-t[0].p.z;
+  var vx=t[2].p.x-t[0].p.x, vy=t[2].p.y-t[0].p.y, vz=t[2].p.z-t[0].p.z;
+  var nx=uy*vz-uz*vy, ny=uz*vx-ux*vz, nz=ux*vy-uy*vx;
+  return Math.sqrt(nx*nx+ny*ny+nz*nz);
+}
+function cmDropDegenerate(tris){
+  var out=[];
+  for(var i=0;i<tris.length;i++) if(cmTriArea2(tris[i]) > 1e-6) out.push(tris[i]);
+  return out.length ? out : tris;      // 全是退化三角形时保持原样，别把模型清空
+}
+/* 顶点焊接（容差 0.11mm）：烘焙出来的网格其实是"几片各自独立的壳"拼的 ——
+   切面片由 cellCaps 生成、为躲 z-fighting 沿法向平移了 0.08mm，
+   与侧面顶点的坐标差 0.01~0.08 → 顶圈不是共享边（既画不出切棱、法向也接不上）。
+   焊一遍之后切面和侧面真正连起来：切棱成为正常的二面角棱，明暗也按同一套平滑组算。 */
+function cmWeldFlat(flat, tol){
+  var n=flat.length/3, map={}, reps=[], i, dx, dy, dz;
+  function cellOf(x,y,z,o){
+    return Math.floor((x+o)/tol)+","+Math.floor((y+o)/tol)+","+Math.floor((z+o)/tol);
+  }
+  for(i=0;i<n;i++){
+    var x=flat[i*3], y=flat[i*3+1], z=flat[i*3+2], hit=-1;
+    var cx=Math.floor(x/tol), cy=Math.floor(y/tol), cz=Math.floor(z/tol);
+    for(dx=-1;dx<=1 && hit<0;dx++) for(dy=-1;dy<=1 && hit<0;dy++) for(dz=-1;dz<=1 && hit<0;dz++){
+      var lst=map[(cx+dx)+","+(cy+dy)+","+(cz+dz)];
+      if(!lst) continue;
+      for(var j=0;j<lst.length;j++){
+        var r=reps[lst[j]];
+        var ex=r[0]-x, ey=r[1]-y, ez=r[2]-z;
+        if(ex*ex+ey*ey+ez*ez <= tol*tol){ hit=lst[j]; break; }
+      }
+    }
+    if(hit<0){
+      hit=reps.length; reps.push([x,y,z]);
+      var k0=cx+","+cy+","+cz;
+      if(!map[k0]) map[k0]=[];
+      map[k0].push(hit);
+    } else {
+      /* 用代表点的坐标（近似把偏移的切面片拉回表面，位移 ≤0.11mm） */
+      flat[i*3]=reps[hit][0]; flat[i*3+1]=reps[hit][1]; flat[i*3+2]=reps[hit][2];
+    }
+  }
+  return flat;
+}
 function cmGeomData(tris){
   if(!tris || !tris.length) return null;
+  tris=cmDropDegenerate(tris);
   var step=Math.max(1,Math.ceil(tris.length/CUSTOM_MAX_TRIS)), sel=[], i;
   for(i=0;i<tris.length;i+=step) sel.push(tris[i]);
+  var flat=new Array(sel.length*9), nv=0;
+  sel.forEach(function(t){
+    t.forEach(function(v){ flat[nv++]=v.p.x; flat[nv++]=v.p.y; flat[nv++]=v.p.z; });
+  });
+  cmWeldFlat(flat, 0.12);
   var lo=[1e18,1e18,1e18], hi=[-1e18,-1e18,-1e18];
-  sel.forEach(function(t){ t.forEach(function(v){
-    var a=[v.p.x,v.p.y,v.p.z];
-    for(var j=0;j<3;j++){ if(a[j]<lo[j]) lo[j]=a[j]; if(a[j]>hi[j]) hi[j]=a[j]; }
-  }); });
+  for(i=0;i<flat.length;i+=3){
+    for(var j=0;j<3;j++){
+      var a=flat[i+j];
+      if(a<lo[j]) lo[j]=a;
+      if(a>hi[j]) hi[j]=a;
+    }
+  }
   var c=[(lo[0]+hi[0])/2,(lo[1]+hi[1])/2,(lo[2]+hi[2])/2];
+  var nrm=cmNormalsFromPos(flat, sel.length);
   var p=[], n=[];
-  sel.forEach(function(t){ t.forEach(function(v){
-    p.push(cmR3(v.p.x-c[0]),cmR3(v.p.y-c[1]),cmR3(v.p.z-c[2]));
-    var ln=v.n ? Math.hypot(v.n.x,v.n.y,v.n.z) : 0;
-    if(ln>1e-6) n.push(cmR3(v.n.x/ln),cmR3(v.n.y/ln),cmR3(v.n.z/ln));
-    else n.push(0,1,0);
-  }); });
+  for(i=0;i<flat.length;i+=3){
+    p.push(cmR3(flat[i]-c[0]),cmR3(flat[i+1]-c[1]),cmR3(flat[i+2]-c[2]));
+    n.push(cmR3(nrm[i]),cmR3(nrm[i+1]),cmR3(nrm[i+2]));
+  }
   return {p:p, n:n, t:sel.length, c:[cmR3(c[0]),cmR3(c[1]),cmR3(c[2])]};
 }
 function cmGeomFromData(d){
   var g=new THREE.BufferGeometry();
   g.setAttribute("position",new THREE.Float32BufferAttribute(d.p,3));
-  g.setAttribute("normal",new THREE.Float32BufferAttribute(d.n,3));
+  /* 法向一律按位置重算：v33.61/62 存的记录里法向全是 (0,1,0)，
+     重算一遍老模型也一起恢复正常明暗，不必让用户重存。 */
+  var triCount=Math.floor(d.p.length/9);
+  g.setAttribute("normal",new THREE.Float32BufferAttribute(cmNormalsFromPos(d.p, triCount),3));
   g.computeBoundingBox(); g.computeBoundingSphere();
   return g;
 }
@@ -7910,15 +8041,111 @@ function cmEnsureVisible(idx){
   var all=cmSceneBox();
   return cmFitToBox(all || box, true);
 }
+/* ---------- 棱线提取（主脚本版，与建模台 solidEdges 同算法） ----------
+   自建模型的价值就在于"切出来的形"，没有棱线时切面边界完全看不见。
+   判据：共享边的两个三角形二面角 > deg 就画；再排除曲面分段缝（isSeam，
+   v33.59 修"圆角梳齿"那条），避免圆锥侧面 64 段母线被画成一圈竖线。
+
+   ★ v33.63 两个坑（都是实测出来的）：
+   ① 裁剪/布尔会留下**零面积残片**，法向是 0 → 与谁比都算 90° → 圆锥 64 条母线
+      全被画成竖条纹。这类三角形必须整个跳过（不登记它的边）。
+   ② 切面片是 `cellCaps` 生成的，为了躲 z-fighting **沿法向平移了 0.08mm**，
+      顶点坐标与侧面差到 0.01~0.08 → 按 0.001 精确比对永远配不上对，
+      切面那一圈棱就一条都画不出来（用户截图里的"被切割线看不到"）。
+      所以顶点要先按**容差焊接**（tol=0.12mm，空间哈希 + 邻格搜索）再建边。 */
+function cmSolidEdges(g, deg){
+  var pos=g.getAttribute("position"), tris=Math.floor(pos.count/3), i, k;
+  var map={}, keys=[], triN=[];
+  var tol=0.12, cell={}, reps=[];
+  function vid(x,y,z){
+    var cx=Math.floor(x/tol), cy=Math.floor(y/tol), cz=Math.floor(z/tol);
+    for(var dx=-1;dx<=1;dx++) for(var dy=-1;dy<=1;dy++) for(var dz=-1;dz<=1;dz++){
+      var lst=cell[(cx+dx)+","+(cy+dy)+","+(cz+dz)];
+      if(!lst) continue;
+      for(var j=0;j<lst.length;j++){
+        var r=reps[lst[j]];
+        var ex=r[0]-x, ey=r[1]-y, ez=r[2]-z;
+        if(ex*ex+ey*ey+ez*ez <= tol*tol) return lst[j];
+      }
+    }
+    var id=reps.length; reps.push([x,y,z]);
+    var k0=cx+","+cy+","+cz;
+    if(!cell[k0]) cell[k0]=[];
+    cell[k0].push(id);
+    return id;
+  }
+  for(i=0;i<tris;i++){
+    var ax=pos.getX(i*3), ay=pos.getY(i*3), az=pos.getZ(i*3);
+    var bx=pos.getX(i*3+1), by=pos.getY(i*3+1), bz=pos.getZ(i*3+1);
+    var cx2=pos.getX(i*3+2), cy2=pos.getY(i*3+2), cz2=pos.getZ(i*3+2);
+    var ux=bx-ax, uy=by-ay, uz=bz-az, vx=cx2-ax, vy=cy2-ay, vz=cz2-az;
+    var nx=uy*vz-uz*vy, ny=uz*vx-ux*vz, nz=ux*vy-uy*vx;
+    var l=Math.sqrt(nx*nx+ny*ny+nz*nz);
+    if(!(l>1e-9)){ triN.push(null); continue; }
+    triN.push([nx/l,ny/l,nz/l]);
+    var ps=[[ax,ay,az],[bx,by,bz],[cx2,cy2,cz2]];
+    for(k=0;k<3;k++){
+      var p=ps[k], q=ps[(k+1)%3];
+      var ia=vid(p[0],p[1],p[2]), ib=vid(q[0],q[1],q[2]);
+      if(ia===ib) continue;                       // 退化到同一个点
+      var ek=(ia<ib)?(ia+"#"+ib):(ib+"#"+ia);
+      if(!map[ek]){ map[ek]={a:reps[ia], b:reps[ib], t:[i]}; keys.push(ek); }
+      else map[ek].t.push(i);
+    }
+  }
+  function isSeam(e, n1, n2){
+    var dx=e.b[0]-e.a[0], dy=e.b[1]-e.a[1], dz=e.b[2]-e.a[2];
+    var L=Math.sqrt(dx*dx+dy*dy+dz*dz);
+    if(L<1e-6 || L>2.5) return false;
+    var cx=n1[1]*n2[2]-n1[2]*n2[1], cy=n1[2]*n2[0]-n1[0]*n2[2], cz=n1[0]*n2[1]-n1[1]*n2[0];
+    var cl=Math.sqrt(cx*cx+cy*cy+cz*cz);
+    if(cl<1e-6) return false;
+    return Math.abs((dx*cx+dy*cy+dz*cz)/(L*cl)) > 0.97;
+  }
+  var out=[], cosLim=Math.cos(deg*Math.PI/180);
+  keys.forEach(function(ek){
+    var e=map[ek], ts=e.t, draw=false;
+    /* 只有 1 个三角形用到 = 开口边界。自建模型里这类边**正好是切口轮廓**：
+       点选保留的切面片是 cellCaps 单独生成的，为躲 z-fighting 沿法向偏移 0.08mm，
+       顶点永远配不上侧面 → 切面那一圈只能以"两片各自的开口边"出现。
+       侧面那圈 + 切面那圈几乎重合（差 0.08mm ≈ 半像素），看起来就是一条切棱。 */
+    if(ts.length === 1){
+      if(triN[ts[0]]) out.push(new THREE.Vector3(e.a[0],e.a[1],e.a[2]),
+                              new THREE.Vector3(e.b[0],e.b[1],e.b[2]));
+      return;
+    }
+    for(var a=0;a<ts.length && !draw;a++){
+      for(var b2=a+1;b2<ts.length;b2++){
+        var n1=triN[ts[a]], n2=triN[ts[b2]];
+        if(!n1 || !n2) continue;
+        if(n1[0]*n2[0]+n1[1]*n2[1]+n1[2]*n2[2] <= cosLim && !isSeam(e,n1,n2)){ draw=true; break; }
+      }
+    }
+    if(!draw) return;
+    out.push(new THREE.Vector3(e.a[0],e.a[1],e.a[2]), new THREE.Vector3(e.b[0],e.b[1],e.b[2]));
+  });
+  return out;
+}
 function cmPlace(id, pos){
   var rec=null;
   customModels.forEach(function(r){ if(r.id===id) rec=r; });
   if(!rec) return -1;
   var geo=cmGeomFromData(rec.geo);
   var half=cmHalfSize(geo);
+  /* 表面往后推一点（polygonOffset +1），棱线永远赢，不会时有时无 */
   var mat=new THREE.MeshLambertMaterial({color:0xe7974b, side:THREE.DoubleSide,
-    polygonOffset:true, polygonOffsetFactor:-1, polygonOffsetUnits:-1});
+    polygonOffset:true, polygonOffsetFactor:1, polygonOffsetUnits:1});
   var mesh=new THREE.Mesh(geo,mat);
+  /* v33.63：棱线挂在网格下面（局部坐标与几何同源，跟着移动/旋转自动跟随） */
+  var epts=[];
+  try{ epts=cmSolidEdges(geo, 24); }catch(e){ epts=[]; }
+  if(epts.length){
+    var eg=new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(epts),
+      new THREE.LineBasicMaterial({color:0x50280c}));
+    eg.renderOrder=3;
+    eg.userData.cmEdge=true;
+    mesh.add(eg);
+  }
   var v=pos || cmDefaultPos(half.hx);
   mesh.position.set(v[0],v[1],v[2]);
   if(!customGroup){ customGroup=new THREE.Group(); scene.add(customGroup); }
@@ -8105,8 +8332,10 @@ function cmRemove(id){
     if(placedCustom[k].id!==id) continue;
     var m=placedCustom[k].mesh;
     if(customGroup) customGroup.remove(m);
-    if(m.geometry) m.geometry.dispose();
-    if(m.material) m.material.dispose();
+    if(m) m.traverse(function(ch){                 // 网格 + 挂在下面的棱线一起回收
+      if(ch.geometry) ch.geometry.dispose();
+      if(ch.material) ch.material.dispose();
+    });
     placedCustom.splice(k,1);
   }
   placedCustom.forEach(function(pc,i){ if(pc.mesh) pc.mesh.userData.cmIdx=i; });

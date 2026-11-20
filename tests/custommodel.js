@@ -116,6 +116,54 @@ check("松手后拖动结束", R("!customDrag && !pendingCustom"));
 const moved = st().placed[0];
 check("模型确实被移动了", Math.hypot(moved.x - s.placed[0].x, moved.y, moved.z) > 1, JSON.stringify(moved));
 
+section("C3 特征可见性：法向重算 + 切面棱线（v33.63）");
+const dirs = R(`(function(){
+  var a=placedCustom[0].mesh.geometry.attributes.normal.array, s={};
+  for(var i=0;i<a.length;i+=3) s[a[i].toFixed(2)+","+a[i+1].toFixed(2)+","+a[i+2].toFixed(2)]=1;
+  return Object.keys(s).length;
+})()`);
+check("法向按曲面重算，不再是一律 (0,1,0)", dirs > 30, dirs + " 种方向");
+const eg = JSON.parse(R(`(function(){
+  var m=placedCustom[0].mesh, ch=m.children||[];
+  for(var i=0;i<ch.length;i++){
+    if(ch[i].isLineSegments) return JSON.stringify({n:ch[i].geometry.attributes.position.count,
+      p:Array.prototype.slice.call(ch[i].geometry.attributes.position.array)});
+  }
+  return "null";
+})()`));
+check("模型带棱线层", !!eg && eg.n > 40, eg && eg.n);
+/* 这块模型是"水平面 y=-15 切一刀、隐藏另一半"得到的截头圆锥：
+   切面那一圈棱的端点必须都落在这个切面上（local 坐标 = -15 - 中心 y） */
+const cutY = -15 - perm.geo.c[1];
+let onCut = 0;
+if (eg) for (let i = 1; i < eg.p.length; i += 3) if (Math.abs(eg.p[i] - cutY) < 0.06) onCut++;
+check("切面（椭圆口）那一圈棱画出来了", onCut >= 20, onCut + " 个端点 y≈" + cutY.toFixed(2));
+/* 明暗能不能分开：切面法向接近 ±Y，侧面法向接近水平（径向） */
+const sep = JSON.parse(R(`(function(){
+  var a=placedCustom[0].mesh.geometry.attributes.normal.array;
+  var cap=0, side=0;
+  for(var i=0;i<a.length;i+=9){
+    var ny=(a[i+1]+a[i+4]+a[i+7])/3;
+    if(Math.abs(ny)>0.9) cap++; else if(Math.abs(ny)<0.5) side++;
+  }
+  return JSON.stringify({cap:cap, side:side, all:a.length/9});
+})()`));
+check("切面 / 侧面法向分开（两块明暗不同）",
+  sep.cap > 5 && sep.side > 5 && sep.cap + sep.side > sep.all * 0.6, JSON.stringify(sep));
+/* v33.61/62 存的老记录法向全是 0：放置时必须重算，不能让老模型继续是"一块平板" */
+R("customModels[0].geo.n = customModels[0].geo.n.map(function(){return 0;});");
+R("window.ConeLabCustom.clearPlaced(); cmPlace('" + perm.id + "',[0,0,0])");
+const dirsOld = R(`(function(){
+  var a=placedCustom[0].mesh.geometry.attributes.normal.array, s={};
+  for(var i=0;i<a.length;i+=3) s[a[i].toFixed(2)+","+a[i+1].toFixed(2)+","+a[i+2].toFixed(2)]=1;
+  return Object.keys(s).length;
+})()`);
+check("老记录（法向被存成 0）放置时也会重算", dirsOld > 30, dirsOld + " 种方向");
+const ms = R(`(function(){
+  var t0=performance.now(); cmPlace('` + perm.id + `',[0,0,0]); return performance.now()-t0;
+})()`);
+check("放置（含法向重算 + 棱线）耗时 < 300ms", ms < 300, Math.round(ms) + "ms");
+
 section("C2 放得太远时自动把视角拉远（v33.61「放了看不见」的根因）");
 R("window.ConeLabCustom.clearPlaced()");
 R("cmPlace('" + perm.id + "',[400,0,0])");
