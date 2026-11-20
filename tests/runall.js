@@ -2,36 +2,35 @@
    本机沙箱禁止 node 派生子进程（EPERM），所以不能用 child_process；
    套件都是同步脚本且各自独立 boot 一个 app 实例，这里用 vm 隔离逐个执行，
    拦截 process.exit 以收集结果。
-   用法: node test2/runall.js */
+   用法: node tests/runall.js */
 "use strict";
 const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
 
 const ROOT = path.resolve(__dirname, "..");
-/* 仓库目录结构：测试都在 tests/ 下（tests/test3/ 是独立 harness）。
-   早期版本这里写的是工作区的 test2/ 前缀，仓库里没有该目录 → 直接 ENOENT。 */
 const SUITES = [
-  ["tests/accept.js",   "四项需求验收"],
-  ["tests/edge.js",     "边界/退化/性能"],
-  ["tests/regions.js",  "分区数=几何分区数"],
-  ["tests/curves.js",   "相贯线几何精度"],
-  ["tests/cellgeo.js",  "分块裁剪互斥完备"],
-  ["tests/cylpick.js",  "相贯体裁切点选"],
-  ["tests/tintpick.js", "贯体变实+点选遮挡"],
+  ["tests/accept.js",  "四项需求验收"],
+  ["tests/edge.js",    "边界/退化/性能"],
+  ["tests/regions.js", "分区数=几何分区数"],
+  ["tests/curves.js",  "相贯线几何精度"],
+  ["tests/cellgeo.js", "分块裁剪互斥完备"],
+  ["tests/cylpick.js", "相贯体裁切点选"],
+  ["tests/tintpick.js","贯体变实+点选遮挡"],
   ["tests/eventflow.js","真实DOM事件流点选"],
-  ["tests/pickfix.js",  "点选中空/伸出段/移动残留"],
-  ["tests/cylcurve.js", "相贯线完整性（覆盖率）"],
-  ["tests/bodies.js",   "空心圆柱+相贯体九种"],
+  ["tests/pickfix.js", "点选中空/伸出段/移动残留"],
+  ["tests/cylcurve.js","相贯线完整性（覆盖率）"],
+  ["tests/bodies.js",  "空心圆柱+相贯体九种"],
   ["tests/viewtoggle.js","三视图二阶切换"],
-  ["tests/hlpart.js",   "取消高亮+拼装实体"],
-  ["tests/partcap.js",  "拼装部件分块封盖"],
+  ["tests/hlpart.js",  "取消高亮+拼装实体"],
+  ["tests/partcap.js", "拼装部件分块封盖"],
   ["tests/snapmodel.js","自动吸附：模型轮廓+接触"],
   ["tests/snapsweep.js","连续吸附灵敏度+拖动性能"],
   ["tests/solidcap.js", "点选保留剩余块封盖（实体）"],
   ["tests/filletundo.js","圆角顶点/移动跟随/撤销"],
-  ["tests/verify.js",   "独立 harness #1"],
-  ["tests/test3/regions.js", "独立 harness #2"],
+  ["tests/custommodel.js","自建模型：保存/放置/拖动"],
+  ["test/verify.js",   "独立 harness #1"],
+  ["test3/regions.js", "独立 harness #2"],
 ];
 
 let fail = 0;

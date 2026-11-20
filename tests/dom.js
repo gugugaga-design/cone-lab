@@ -169,7 +169,7 @@ function makeDocument(){
   });
 
   var left = new FakeEl("div"); left.id = "leftbtns"; stage.appendChild(left);
-  ["btnSolid","btnSolidPart","btnCurve","btnXline","btnHl","btnLock","btnUndo"].forEach(function(id){
+  ["btnSolid","btnSolidPart","btnCurve","btnXline","btnHl","btnLock","btnUndo","btnSaveCustom"].forEach(function(id){
     var b = reg(new FakeEl("button"), id); left.appendChild(b);
   });
   reg(new FakeEl("div"), "hint"); stage.appendChild(byId.hint);
@@ -226,6 +226,26 @@ function makeDocument(){
   ["cylcyl","cylbox"].forEach(function(s){
     var c = new FakeEl("div"); c.classList.add("card"); c.setAttribute("data-demo", s); demoCards.appendChild(c);
   });
+
+  // v33.61 自建模型：首页卡片页 + 保存弹窗（harness 里也建出来，测试才能走真实事件）
+  reg(new FakeEl("div"), "cmHomeCards").hidden = false; home.appendChild(byId.cmHomeCards);
+  var cmOv = reg(new FakeEl("div"), "cmOverlay"); cmOv.hidden = true; body.appendChild(cmOv);
+  reg(new FakeEl("button"), "cmBack"); cmOv.appendChild(byId.cmBack);
+  reg(new FakeEl("div"), "cmTitle"); cmOv.appendChild(byId.cmTitle);
+  reg(new FakeEl("div"), "cmInfo"); cmOv.appendChild(byId.cmInfo);
+  var cmTabs = new FakeEl("div"); cmTabs.id = "cmTabs"; cmOv.appendChild(cmTabs);
+  ["owner","all"].forEach(function(f){
+    var b = new FakeEl("button"); b.setAttribute("data-f", f); cmTabs.appendChild(b);
+  });
+  reg(new FakeEl("button"), "cmClearPlaced"); cmTabs.appendChild(byId.cmClearPlaced);
+  reg(new FakeEl("div"), "cmList"); cmOv.appendChild(byId.cmList);
+  var cmDlg = reg(new FakeEl("div"), "cmSaveDlg"); cmDlg.hidden = true; body.appendChild(cmDlg);
+  reg(new FakeEl("div"), "cmDlgInfo"); cmDlg.appendChild(byId.cmDlgInfo);
+  var cmName = reg(new FakeEl("input"), "cmName"); cmDlg.appendChild(cmName);
+  ["temp","perm"].forEach(function(sc){
+    var b = new FakeEl("button"); b.setAttribute("data-scope", sc); cmDlg.appendChild(b);
+  });
+  reg(new FakeEl("button"), "cmCancel"); cmDlg.appendChild(byId.cmCancel);
 
   var doc = {
     _byId: byId,
