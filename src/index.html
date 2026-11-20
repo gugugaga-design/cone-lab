@@ -12752,6 +12752,24 @@ function solidEdges(g, deg) {
     }
   }
   var out = [], cosLim = Math.cos(deg * Math.PI / 180);
+  /* v33.59 毛边（用户截图"圆角用完有一排梳齿竖线"）：
+     圆角圆柱面离散成 16 段，段与段之间的**母线**两侧法向差 22.5°，BSP 扰动后
+     偶尔略过 24° 阈值 → solidEdges 把每一段母线都画出来，沿整条圆角弧排成梳齿
+     （实测 R5 每段弦长 0.491mm、一根圆角画出 31 条）。这些不是真棱，是曲面分段缝。
+     判据：共享边方向 ≈ 两片法向的叉积（n1×n2 与边同向）→ 两片法向都⊥这条边，
+     正是同一圆柱面上相邻两片的关系；真实几何棱（圆柱∩平面、两圆柱相贯）不满足。
+     额外要求边长 ≤ maxSeg，避免误伤大面上的真棱。 */
+  function isSeam(e, n1, n2) {
+    var dx = e.b[0] - e.a[0], dy = e.b[1] - e.a[1], dz = e.b[2] - e.a[2];
+    var L = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    /* 上限按最大支持半径 R20 的 16 段弦长（≈1.96mm）留余量取 2.5mm。
+       真棱（相切线/端面边）通常 >2.5mm，且方向 ∥ n1×n2 的判据本身已很严格。 */
+    if (L < 1e-6 || L > 2.5) return false;
+    var cx = n1[1] * n2[2] - n1[2] * n2[1], cy = n1[2] * n2[0] - n1[0] * n2[2], cz = n1[0] * n2[1] - n1[1] * n2[0];
+    var cl = Math.sqrt(cx * cx + cy * cy + cz * cz);
+    if (cl < 1e-6) return false;
+    return Math.abs((dx * cx + dy * cy + dz * cz) / (L * cl)) > 0.97;
+  }
   keys.forEach(function (ek) {
     var e = map[ek];
     /* v33.54 bug3：旧判据要求「这条棱恰好被 2 个三角形共用」——
@@ -12762,7 +12780,8 @@ function solidEdges(g, deg) {
     for (var i = 0; i < ts.length && !draw; i++) {
       for (var j = i + 1; j < ts.length; j++) {
         var n1 = triN[ts[i]], n2 = triN[ts[j]];
-        if (n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2] <= cosLim) { draw = true; break; }
+        if (n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2] <= cosLim &&
+            !isSeam(e, n1, n2)) { draw = true; break; }
       }
     }
     if (!draw) return;                               // 共面拼接边：不画

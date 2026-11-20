@@ -402,6 +402,25 @@ const g2v = st();
 check("补角后体积仍为正且小于裸盒", g2v.solid && g2v.vol > 0 && g2v.vol < 50 * 50 * 25, "vol=" + g2v.vol);
 
 /* ---------------------------------------------------------------- */
+section("I. v33.59 毛边：圆角圆柱面分段缝不再被画成梳齿棱线");
+R(RESET);
+R('addEntity("rect",{x0:-50,y0:-25,x1:50,y1:25},true);');
+R('S.feature.start=0; S.feature.end=25; S.feature.dir=1; featureExtrude("add");');
+pick([0, -25, 25]); R("fillet(5);");
+const comb = JSON.parse(R(`(function(){
+  var g=csgGeom(S.solid), pts=solidEdges(g,24), seam=0, total=0;
+  for(var i=0;i+1<pts.length;i+=2){ total++;
+    var a=pts[i],b=pts[i+1], len=a.distanceTo(b);
+    /* 圆角圆柱面分段缝：短（≤2.5mm）且沿弧切线方向（x 在 ±50 端面上） */
+    if(len<2.5) seam++;
+  }
+  return JSON.stringify({total:total,seam:seam});
+})()`));
+/* 过滤前 44 段（31 条 0.491mm 接缝）；过滤后 13 段、接缝≤2（两条真实短相切线）。 */
+check("圆角面无梳齿接缝棱线（v33.58 是 31 条）", comb.seam <= 2 && comb.total <= 16,
+  "total=" + comb.total + " seam=" + comb.seam);
+
+/* ---------------------------------------------------------------- */
 section("H. v33.57 bug3：撤销不动视角（zoom≠1 时视锥不再被反复除以 zoom）");
 R("S.cam3.zoom = 2.4; S.cam3.updateProjectionMatrix(); resizeView();");
 const FR = `(function(){ return JSON.stringify({
