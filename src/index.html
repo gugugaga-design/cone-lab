@@ -8445,8 +8445,10 @@ function cmSectionPoly2D(pe, nv, d){
   var B = planeBasis(nv, d);
   if(!idx) return {B:B, poly:[]};
   if(!_cmCapCache) _cmCapCache = {};
-  var sig = pe._id + "|" + nv.x.toFixed(6) + "|" + nv.y.toFixed(6) + "|" +
-            nv.z.toFixed(6) + "|" + d.toFixed(6);
+  /* 缓存键必须覆盖全部输入：实例、位置、平面。位置进键是为了防"拖动后拿到旧截面"
+     （buildCellVis 每次也会清空整张表，这里只是双保险）。 */
+  var sig = pe._id + "|" + pe.x.toFixed(2) + "|" + pe.y.toFixed(2) + "|" + pe.z.toFixed(2) +
+            "|" + nv.x.toFixed(6) + "|" + nv.y.toFixed(6) + "|" + nv.z.toFixed(6) + "|" + d.toFixed(6);
   if(_cmCapCache[sig]) return _cmCapCache[sig];
   /* 世界平面换到"减掉实例位置"的局部坐标：n·p_local = d - n·pos */
   var dl = d - (nv.x*pe.x + nv.y*pe.y + nv.z*pe.z);
