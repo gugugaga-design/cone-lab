@@ -478,6 +478,28 @@ check("藏掉之后该块进入幽灵层（还能点回来）",
 R("_pickCycle.x=-9999; _pickCycle.y=-9999;");
 tapAt(jScreen[0], jScreen[1]);
 check("原地再点一下能恢复", R("cells.every(function(c){return c.sel!==false;})") === true);
+/* v33.71：体与体的分界也要补"实心面"（否则隐藏一侧后交叠处露出内壁 = 用户说的蓝色阴影） */
+check("交叠处补出了『体表面』封盖（capBody），隐藏一侧后不会透出内壁",
+  R(`(function(){var n=0;cellGroup.children.forEach(function(m){
+    if(m.userData.capBody && m.material && m.material.color) n++;});return n;})()`) >= 1,
+  R(`String((function(){var n=0;cellGroup.children.forEach(function(m){if(m.userData.capBody)n++;});return n;})())`));
+check("『体表面』封盖用的是本块的材料色（不是内壁深色）",
+  R(`(function(){var ok=false;cellGroup.children.forEach(function(m){
+    if(m.userData.capBody && m.material && m.material.color){
+      var h=m.material.color.getHexString();
+      if(h==='12d6c8'||h==='8fd8ff'||h==='e7974b'||h==='f08c42') ok=true;
+    }});return ok;})()`) === true);
+/* v33.71：换目标点选必须从 index 0 重新开始（"第一次点没反应、第二次才消失"） */
+R("cells.forEach(function(c){ c.sel=true; }); pickSel={}; buildCellVis();");
+R("_pickCycle.x=-9999; _pickCycle.y=-9999; _pickCycle.first=null;");
+tapAt(jScreen[0], jScreen[1]);
+const pkI1 = R("_pickCycle.i");
+R("cells.forEach(function(c){ c.sel=true; }); pickSel={}; buildCellVis();");
+tapAt(jScreen[0] + 60, jScreen[1]);      // 换个位置（离上次 > 8px）
+const pkI2 = R("_pickCycle.i");
+check("点新目标时从「最前面那块」开始（不会直接跳到第 2 个候选）",
+  pkI1 === 0 && pkI2 === 0, "i1=" + pkI1 + " i2=" + pkI2);
+
 /* 清场 */
 R(`(function(){for(var i=customModels.length-1;i>=0;i--){
     if(customModels[i].id==='${jRec.id}'){ customModels.splice(i,1); break; }

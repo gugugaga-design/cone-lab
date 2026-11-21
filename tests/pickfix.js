@@ -257,7 +257,8 @@ const moveAfter = app.run(`(function(){
   rebuildCells(); buildCellVis(); cellsDirty = false;
   var meshOwners = [];
   if(cellGroup) cellGroup.children.forEach(function(m){
-    if(m.userData.cap) return;
+    /* v33.71：封盖（工程面切面 cap / 体表面 capBody）是补面，不参与"块与网格一一对应" */
+    if(m.userData.cap || m.userData.capBody) return;
     meshOwners.push(m.userData.ck);
   });
   return {cells: cells.map(function(c){ return c.key; }), meshOwners:meshOwners,

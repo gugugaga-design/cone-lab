@@ -2892,6 +2892,8 @@ function buildCellVis(){
       peq.mesh.visible = !hasCmCell;
     }
   }
+  /* v33.71：体表面封盖的几何缓存（每个体一份，多个块共用；统一在 cellOwnGeos 里释放） */
+  var bodyCapGeoP = {}, bodyCapGeoM = {};
   cells.forEach(function(c){
     /* v33.2：决定这一块用哪份几何体。
        · 落在某个部件内部（ownerPart != null）→ 用该部件的几何体（已 applyMatrix4 到世界位姿）
@@ -3021,6 +3023,60 @@ function buildCellVis(){
         cm.userData.ck = c.key; cm.userData.cap = true;
         cellGroup.add(cm);
       });
+    }
+    /* v33.71：**体与体的分界也要封盖**（用户 c 图"交叠处的蓝色阴影"）。
+       现象：圆台（拼装部件）与自建模型重叠时，把其中一块隐藏后，交叠处残留
+       一片深蓝的"阴影" —— 那其实是**交界另一侧材料的背面（内壁）**。
+       根因：分块只在**工程面**（平面）上生成封盖；当两个体的分界是
+       "彼此的表面"（部件侧面 / 模型侧面）时，切口完全敞着，于是看到内壁。
+       做法：对场上每个体 B，把 **B 的表面**补一层，颜色用**本块的材料色**，
+       再用 polygonOffset 压到 B 自己的表面之后：
+         · B 正被画出来时 → 被 B 的表面挡住，看不见（不改变正常外观）；
+         · B 被隐藏时 → 露出一层实心面（材料色），不再透出内壁。
+       裁剪用本块原有的规格（planes + cyls + parts + cm）：
+       v33.70 给 partInsideM / cmMaskSD 都加了余量，贴在表面上的片元不会被边界抖动误裁，
+       所以这一层补面正好落在"本块材料范围内"，不会糊到别的块上。 */
+    if(c.sel){
+      /* 补面沿 B 的表面法向**几何偏移 0.06mm**：
+         keep=-1（本块材料在 B 内部）→ 往体内偏，B 自己的表面正好挡在它前面；
+         keep=+1（材料在 B 外部）→ 往体外偏。
+         只用 polygonOffset 不够稳（斜率项在共面时互相抵消，单位项又太小），
+         直接错开几何最可靠。 */
+      var mkBodyCap = function(geo, color){
+        var mat = new THREE.MeshLambertMaterial({
+          color:color, side:THREE.DoubleSide,
+          clippingPlanes:c.planes, clipIntersection:false});
+        setCylSpecs(mat, c.cyls || []);
+        setPartSpecs(mat, c.parts || []);
+        setCmSpecs(mat, cmSpecs, maskTex);
+        mat.depthTest = true;
+        var mm = new THREE.Mesh(geo, mat);
+        mm.renderOrder = 1011;
+        mm.userData.ck = c.key; mm.userData.capBody = true;
+        cellGroup.add(mm);
+      };
+      var capGeoOf = function(kind, idx, keep){
+        var cache = (kind === "p") ? bodyCapGeoP : bodyCapGeoM;
+        var key = idx * 2 + (keep > 0 ? 1 : 0);
+        if(cache[key]) return cache[key];
+        var src = (kind === "p")
+          ? (function(){ var g = partGeoOf(psC[idx]).clone(); g.applyMatrix4(partMatrix(psC[idx])); return g; })()
+          : cmBodyGeoWorld(msC[idx]);
+        var g2 = offsetGeoAlongNormals(src, keep > 0 ? 0.06 : -0.06);
+        cache[key] = g2; cellOwnGeos.push(g2);
+        return g2;
+      };
+      for(var bp=0; bp<psC.length; bp++){
+        if(c.ownerPart === bp) continue;                 // 本块几何就是它，不用再补
+        if(!(c.parts && c.parts[bp])) continue;          // 本块不涉及这个部件
+        mkBodyCap(capGeoOf("p", bp, c.parts[bp].keep), colF);
+      }
+      for(var bm=0; bm<msC.length; bm++){
+        if(c.ownerPe === msC[bm]) continue;
+        var spB = cmSpecs && cmSpecs[bm];
+        if(!spB) continue;
+        mkBodyCap(capGeoOf("m", bm, spB.keep), colF);
+      }
     }
   });
   scene.add(cellGroup);
@@ -6659,7 +6715,12 @@ function tapPick(e){
     }
   }
   if(cellGroup && cellGroup.children.length){
-    var ch = raycaster.intersectObjects(cellGroup.children, false);
+    /* v33.71：**封盖不参与点选**。封盖（工程面切面的 cap / 体表面的 capBody）是补出来
+       的面，不是材料本体；它们和分块网格几乎共面，被射线先命中的话就会把"看不见的补面"
+       当成用户点中的那块 —— 表现就是"点一下没反应，再点一下才消失"。 */
+    var ch = raycaster.intersectObjects(cellGroup.children.filter(function(mm){
+      return !(mm.userData && (mm.userData.cap || mm.userData.capBody));
+    }), false);
     if(ch.length){
       /* v33.13：**用"命中点落在哪个裁剪区域"来定 cell**。
          raycast 不执行 clippingPlanes / shader discard，
@@ -6774,14 +6835,26 @@ function tapPick(e){
     return a.dist - b.dist;
   });
 
-  /* ---- 原地连点 → 在候选之间轮换；换位置 → 从最近的开始 ---- */
+  /* ---- 原地连点 → 在候选之间轮换；换目标 → 从"最前面那块"重新开始 ----
+     v33.71（用户第 4 步："第一次点自建模型，上半部分不消失，再点一次才消失"）：
+     原来只按"离上一次点击 14px 以内"就轮换，**不看你点的是不是同一个东西**。
+     于是：先点过别处 → 再点模型（离上次不到 14px）→ 直接跳到候选里的第 2 个
+     （常常是"整个部件"或被挡住的幽灵），屏幕上毫无变化；再点一下才轮到模型那块。
+     现在要求三件事同时成立才轮换：同一位置（8px 内）、**同一个第一候选**、1.5 秒内。
+     换目标一律从 index 0（最前面、看得见的那一块）开始 —— 点一下就必须有反应。 */
+  var nowPk = Date.now();
+  var pkFirst = cands[0] && (cands[0].kind === "cell" ? cands[0].key : ("part" + cands[0].pi));
   var dx = e.clientX - _pickCycle.x, dy = e.clientY - _pickCycle.y;
-  if(cands.length > 1 && (dx*dx + dy*dy) <= 196){       // 14px 内算"同一位置"
+  var sameSpot = (dx*dx + dy*dy) <= 64;                 // 8px 内算"同一位置"
+  var sameTarget = (_pickCycle.first != null && _pickCycle.first === pkFirst);
+  var quick = (nowPk - (_pickCycle.t || 0)) <= 1500;
+  if(cands.length > 1 && sameSpot && sameTarget && quick){
     _pickCycle.i = (_pickCycle.i + 1) % cands.length;
   } else {
     _pickCycle.i = 0;
   }
   _pickCycle.x = e.clientX; _pickCycle.y = e.clientY;
+  _pickCycle.t = nowPk; _pickCycle.first = pkFirst;
   var pick = cands[Math.min(_pickCycle.i, cands.length - 1)];
 
   /* v32：多个候选叠在同一位置时，明确告诉用户"再点一下就能换到下一个"，
@@ -8817,6 +8890,23 @@ function cmBodyPoints(pe){
     res.push(new THREE.Vector3(A[0]+ox, A[1]+oy, A[2]+oz));
   }
   return res;
+}
+/* v33.71：把几何沿顶点法向偏移 dist（mm）—— 用来给"体表面封盖"错开一丁点深度，
+   避免和体自己的表面逐像素打架。（负值 = 往体内缩） */
+function offsetGeoAlongNormals(geo, dist){
+  var g = geo.clone();
+  g.computeVertexNormals();
+  var pos = g.attributes.position, nor = g.attributes.normal;
+  for(var i=0;i<pos.count;i++){
+    pos.setXYZ(i,
+      pos.getX(i) + nor.getX(i)*dist,
+      pos.getY(i) + nor.getY(i)*dist,
+      pos.getZ(i) + nor.getZ(i)*dist);
+  }
+  pos.needsUpdate = true;
+  g.computeVertexNormals();
+  g.computeBoundingSphere();
+  return g;
 }
 /* v33.66：**外表面壳点**（每个采样三角面的形心沿法向 +0.6mm）。
    分块是靠"撒点 + 记符号位"发现区域的：只撒体内点，"贴着别的体表面、但落在体外"
