@@ -437,6 +437,31 @@ check("重叠处同时有「部件内+模型外」和「部件内+模型内」�
 const jKey = R("(function(){var c=cellAtPoint(new THREE.Vector3(0,10,13));return c?c.key:'null';})()");
 check("取到的是「部件内 + 模型外」那块（看得见的青色）",
   jKey !== "null" && jKey.indexOf(jAbove) === 0 && /p\d+:3\|m\d+:0/.test(jKey), jKey);
+/* v33.66：重叠接缝必须"连续 + 两侧重叠"，否则就是 1 格台阶（毛边）或一条缝（空心） */
+const jSD = JSON.parse(R(`(function(){
+  var pe=placedCustom[0], m=cmMaskOf(customModels[customModels.length-1]);
+  var vox=m.vox, x0=pe.x+15;                       // 圆锥在 y=0 处的半径正好 15
+  var arr=[];
+  for(var i=0;i<=40;i++){
+    var x=x0-1.5*vox+3.0*vox*i/40;
+    arr.push(cmMaskSDAt(pe, new THREE.Vector3(x, pe.y, pe.z)));
+  }
+  var dmax=0;
+  for(var j=1;j<arr.length;j++) dmax=Math.max(dmax, Math.abs(arr[j]-arr[j-1]));
+  /* 零交叉两侧的采样值：只要都落在 ±0.6 的"重叠余量"内，两个体在边界处就互相覆盖 → 不留缝 */
+  var zi=-1;
+  for(var k2=1;k2<arr.length;k2++) if(arr[k2-1]<=0 && arr[k2]>0){ zi=k2; break; }
+  var sin = zi>0 ? arr[zi-1] : 99, sout = zi>0 ? arr[zi] : 99;
+  var mid=0; for(var k=0;k<m.grid.length;k++){ var b=m.grid[k]; if(b>40&&b<215) mid++; }
+  return JSON.stringify({dmax:dmax, sin:sin, sout:sout, mid:mid, vox:vox, zi:zi, n:arr.length});
+})()`));
+check("模型烘的是**距离场**（不是 0/1 占用表，有大量中间值）",
+  jSD.mid > 2000, jSD.mid + " / 262144");
+check("距离场沿一条穿过表面的线**连续**（相邻差 < 0.5 格 → 没有 1 格台阶）",
+  jSD.dmax < 0.5, "maxΔ=" + jSD.dmax.toFixed(3) + "  vox=" + jSD.vox.toFixed(2));
+check("零交叉两侧都落在 ±0.6 格的『重叠余量』里（缝合得上，不可能留缝）",
+  jSD.zi > 0 && jSD.sin > -0.6 && jSD.sout < 0.6,
+  "in=" + jSD.sin.toFixed(2) + " out=" + jSD.sout.toFixed(2) + " zi=" + jSD.zi);
 R("camera.position.set(110,90,170); controls.target.set(0,0,0); camera.lookAt(0,0,0); camera.updateMatrixWorld(true);");
 const jScreen = JSON.parse(R(`(function(){
   var v=new THREE.Vector3(0,10,13).project(activeCam), r=renderer.domElement.getBoundingClientRect();

@@ -2525,6 +2525,9 @@ function rebuildCells(){
   if(ms.length){
     ms.forEach(function(pe){
       cmBodyPoints(pe).forEach(addPoint);
+      /* v33.66：模型"外表面壳"也要采（只在有部件时）：部件与模型贴着的那一圈
+         薄区域只靠体内点采不到，缺了它就会缺一块 cell → 切完空洞。 */
+      if(ps.length) cmBodyShellPoints(pe).forEach(addPoint);
     });
   }
   /* v33.7：**按空间连通性真正拆分**。
@@ -3428,20 +3431,40 @@ var CYL_GLSL = [
 "  float t=(q.y+d.y)/(2.0*d.y);",                                             // 槽（近似）
 "  return (abs(q.z)<=d.z && q.y<=0.0 && rho<=d.x && rho>=d.y);",
 "}",
-/* v33.65：查体素表判"世界点是否落在某个自建模型体内"。
-   atlas 布局：6 个槽按 3列×2行 摆；每槽把 N 张 Z 切片按 8列×6行 平铺。 */
-"bool cmMaskInside(int i, vec3 w){",
-"  float kp = uCmKeep[i].x;",
-"  if(abs(kp) < 0.5 || uCmPos[i].w < 0.5) return false;",
+/* v33.66：查"自建模型的窄带符号距离场"（与 JS 侧 cmMaskOf 同一套编码）。
+   返回值单位 = 格：<0 体内、0≈表面、>0 体外，带外饱和到 ±2。
+   atlas 布局：6 个槽按 3列×2行 摆；每槽把 N 张 Z 切片按 8列×8行 平铺。
+   ★ 必须**三线性插值**：只取最近格（v33.65 的 0/1 查表）等于把曲面量化到格子棱上，
+     重叠处的接缝就是一圈 ≈1 格的锯齿；插值后等值面落在格内，
+     局部平面能被线性插值精确复现 → 接缝连续，不再有台阶。 */
+"float cmTexel(vec3 v, float slot){",
+"  v = clamp(v, vec3(0.0), vec3(uCmAtlas.z - 1.0));",
+"  float tx = mod(v.z, 8.0), ty = floor(v.z / 8.0);",
+"  float sx = mod(slot, uCmAtlas.w), sy = floor(slot / uCmAtlas.w);",
+"  vec2 px = vec2((sx*8.0+tx)*uCmAtlas.z + v.x + 0.5, (sy*8.0+ty)*uCmAtlas.z + v.y + 0.5);",
+"  return texture2D(uCmMask, px / uCmAtlas.xy).r;",
+"}",
+"float cmMaskSD(int i, vec3 w){",
+"  if(abs(uCmKeep[i].x) < 0.5 || uCmPos[i].w < 0.5) return 2.0;",
 "  vec3 sz = max(uCmSz[i].xyz, vec3(1e-6));",
 "  vec3 f = (w - uCmPos[i].xyz - uCmLo[i].xyz) / sz;",
-"  if(f.x<0.0 || f.x>=1.0 || f.y<0.0 || f.y>=1.0 || f.z<0.0 || f.z>=1.0) return false;",
-"  float N = uCmAtlas.z, COLS = uCmAtlas.w;",
-"  vec3 v = floor(clamp(f, 0.0, 0.999999) * N);",
-"  float tx = mod(v.z, 8.0), ty = floor(v.z / 8.0);",
-"  float sx = mod(float(i), COLS), sy = floor(float(i) / COLS);",
-"  vec2 px = vec2((sx*8.0+tx)*N + v.x + 0.5, (sy*8.0+ty)*N + v.y + 0.5);",
-"  return texture2D(uCmMask, px / uCmAtlas.xy).r > 0.5;",
+"  if(f.x<0.0 || f.x>=1.0 || f.y<0.0 || f.y>=1.0 || f.z<0.0 || f.z>=1.0) return 2.0;",
+"  float N = uCmAtlas.z;",
+"  vec3 g = clamp(f, 0.0, 0.999999) * N - 0.5;",
+"  vec3 b = floor(g), t = g - b;",
+"  float s = float(i);",
+"  float c000 = cmTexel(b,                     s);",
+"  float c100 = cmTexel(b + vec3(1.0,0.0,0.0), s);",
+"  float c010 = cmTexel(b + vec3(0.0,1.0,0.0), s);",
+"  float c110 = cmTexel(b + vec3(1.0,1.0,0.0), s);",
+"  float c001 = cmTexel(b + vec3(0.0,0.0,1.0), s);",
+"  float c101 = cmTexel(b + vec3(1.0,0.0,1.0), s);",
+"  float c011 = cmTexel(b + vec3(0.0,1.0,1.0), s);",
+"  float c111 = cmTexel(b + vec3(1.0,1.0,1.0), s);",
+"  float v00 = mix(c000, c100, t.x), v10 = mix(c010, c110, t.x);",
+"  float v01 = mix(c001, c101, t.x), v11 = mix(c011, c111, t.x);",
+"  float v0 = mix(v00, v10, t.y), v1 = mix(v01, v11, t.y);",
+"  return mix(v0, v1, t.z) * 4.0 - 2.0;",
 "}",
 "void cylDiscard(){",
 "  for(int i=0;i<4;i++){",
@@ -3509,12 +3532,17 @@ var CYL_GLSL = [
 "      if(pk > 0.0){ if(pins) discard; } else { if(!pins) discard; }",
 "    }",
 "  }",
-"  /* v33.65：自建模型体积裁剪（与部件同一语义）。 */",
+"  /* v33.66：自建模型体积裁剪（与部件同一语义），走窄带距离场。",
+"     ★ 留 0.6 格的『重叠余量』：keep>0 只丢 sd < -0.6（明确在体内）的片元，",
+"       keep<0 只丢 sd > 0.6 的片元 —— 两个体的材料在边界处互相重叠 0.6 格。",
+"       重叠那点永远被对方的表面挡住（闭合网格的内部必在表面之后），看起来一模一样，",
+"       但**接缝绝不会漏出一条缝**（漏缝就是用户说的『空心』）。 */",
 "  for(int t=0;t<6;t++){",
 "    float ck = uCmKeep[t].x;",
 "    if(abs(ck) > 0.5){",
-"      bool ins = cmMaskInside(t, vCylW);",
-"      if(ck > 0.0){ if(ins) discard; } else { if(!ins) discard; }",
+"      float sd = cmMaskSD(t, vCylW);",
+"      if(ck > 0.0){ if(sd < -0.6) discard; }",
+"      else        { if(sd >  0.6) discard; }",
 "    }",
 "  }",
 "}"
@@ -8371,6 +8399,7 @@ var _cmCapCache = null;    // 本轮的"平面 ∩ 自建模型"截面缓存（b
    体素表按【模型记录】缓存在 rec._cmMask（同一模型放多个实例共用），
    atlas 每轮 buildCellVis 按【在场实例】重打（位置进 uniform，不进纹理）。 */
 var CM_GRID_N = 64;        // 每条轴 64 格（面少的模型锥尖也采得到）
+var CM_BAND   = 1.4;       // 距离场窄带半径（格）：带外只存 ±BAND（够插值即可，越小越快）
 var CM_SLOTS   = 6;        // 同时参与裁剪的实例上限（与 PARTS_MAX=6 对齐）
 var CM_TC = 8, CM_TR = 8;  // 64 张 Z 切片按 8×8 平铺
 var CM_COLS = 3, CM_ROWS = 2;
@@ -8433,25 +8462,137 @@ function cmMaskOf(rec){
       }
     }
   }
-  /* v33.65：一格膨胀 —— 表面附近的格若判到外面，会在切口留一圈散点。
-     把"体内"向邻格扩一格（≈1~2mm），换取表面连续；边界略粗但看不出来。 */
-  var dil = new Uint8Array(N*N*N);
-  for(var dz=0; dz<N; dz++) for(var dy=0; dy<N; dy++) for(var dx=0; dx<N; dx++){
-    if(grid[(dz*N+dy)*N+dx]){
-      for(var a=-1;a<=1;a++) for(var b=-1;b<=1;b++) for(var c=-1;c<=1;c++){
-        var x2=dx+a, y2=dy+b, z2=dz+c;
-        if(x2>=0&&x2<N&&y2>=0&&y2<N&&z2>=0&&z2<N) dil[(z2*N+y2)*N+x2]=1;
-      }
+  /* v33.66：**改用窄带符号距离场，不再用 0/1 占用表**。
+     占用表只能按整格查表 → 边界必然落在格子棱上，两个体重叠处的接缝就是一圈
+     ≈1 格的锯齿台阶（用户截图上青色那块左缘的"毛边"）；v33.65 为了让表面连续
+     又加了一格膨胀，等于把材料系统性削掉一格 → 接缝处反而露出内部（"空心"）。
+     距离场 + 三线性插值：等值面落在格内，局部平面上线性插值可**精确复现**平面，
+     边界误差从 1 格降到 ~0.05 格，而且是连续的（不再有台阶）。 */
+  var on = 0;
+  for(i=0;i<grid.length;i++) on += grid[i];
+  /* 一个格都没占 → 网格退化（绕序/法向坏）。这种模型绝不能拿来"裁别人的材料"：
+     否则 keep=-1 的块整片被丢（空心）、keep=+1 的块完全没裁（毛边/穿帮）。
+     直接返回 null = 不参与着色器裁剪，几何上退回 v33.64 的行为。 */
+  if(on === 0) return null;
+  var vox = (sx+sy+sz)/3;                        // 平均格边长（世界 mm）
+  var BAND = CM_BAND;                            // 窄带半径（格）
+  var sdf = new Uint8Array(N*N*N);
+  var dist = new Float32Array(N*N*N);
+  for(i=0;i<dist.length;i++) dist[i] = 1e9;
+  /* ---- 只在"表面附近一格"算精确距离（点面距离），远处一律饱和到 ±BAND。
+          近表面格子用"沿三个轴各看一步有没有异号"来找（262k×6 次比较，几毫秒），
+          比 26 邻域（7M 次）快得多，效果一样：轴的任一侧有异号就说明这一格贴着表面。 ---- */
+  var nearB = new Uint8Array(N*N*N);
+  for(var z4=0; z4<N; z4++) for(var y4=0; y4<N; y4++){
+    var b4=(z4*N+y4)*N;
+    for(var x4=0; x4<N; x4++){
+      var g4=grid[b4+x4];
+      /* 用 **AND**：只要有一个邻格异号，AND 就与 g4 不同。
+         （用 OR 时"1 和 0 混在一起"会被 OR 成 1，正好漏掉体内侧那一层 —— 踩过。） */
+      var nb4 = (x4>0 ? grid[b4+x4-1] : 0) & (x4<N-1 ? grid[b4+x4+1] : 0) &
+                (y4>0 ? grid[b4-N+x4] : 0) & (y4<N-1 ? grid[b4+N+x4] : 0) &
+                (z4>0 ? grid[b4-N*N+x4] : 0) & (z4<N-1 ? grid[b4+N*N+x4] : 0);
+      if(nb4 !== g4) nearB[b4+x4]=1;
     }
   }
-  rec._cmMask={grid:dil, lo:lo, hi:hi, size:[hi[0]-lo[0],hi[1]-lo[1],hi[2]-lo[2]], n:n};
+  for(var iz3=0; iz3<N; iz3++) for(var iy3=0; iy3<N; iy3++) for(var ix3=0; ix3<N; ix3++){
+    var vi=(iz3*N+iy3)*N+ix3;
+    if(!nearB[vi]) continue;
+    var vx3=lo[0]+sx*(ix3+0.5), vy3=lo[1]+sy*(iy3+0.5), vz3=lo[2]+sz*(iz3+0.5);
+    /* 候选三角面 = 该点所在 (x,z) 列的 3×3 个桶（与奇偶扫描共用同一份列桶） */
+    var bix=Math.floor((vx3-lo[0])/wx), biz=Math.floor((vz3-lo[2])/wz);
+    var best3=1e18;
+    for(var oi=-1; oi<=1; oi++) for(var ok=-1; ok<=1; ok++){
+      var ci2=bix+oi, ck2=biz+ok;
+      if(ci2<0||ci2>=NB||ck2<0||ck2>=NB) continue;
+      var lst3=bk[ci2*NB+ck2];
+      if(!lst3) continue;
+      for(var q3=0;q3<lst3.length;q3++){
+        var o4=lst3[q3]*9;
+        var d2b=cmPointTriD2(vx3,vy3,vz3,
+          p[o4],p[o4+1],p[o4+2], p[o4+3],p[o4+4],p[o4+5], p[o4+6],p[o4+7],p[o4+8]);
+        if(d2b<best3) best3=d2b;
+      }
+    }
+    if(best3<1e17) dist[vi]=Math.sqrt(best3);
+  }
+  /* ---- 编码：格为单位、体内为负。
+     ★ 比例**固定**为 63.75 码/格（±2 格 = 0/255），与着色器/JS 解码的 `r*4-2` 严格对应；
+       不能跟着 CM_BAND 走，否则改窄带半径就会让解码失真（曾踩过：±0.3 格解成 ±1.33）。 ---- */
+  var K = 63.75;
+  for(i=0;i<sdf.length;i++){
+    var dd = dist[i]/vox;
+    if(dd > CM_BAND) dd = CM_BAND;
+    var sd = grid[i] ? -dd : dd;
+    var by = Math.round(127.5 + K*sd);
+    sdf[i] = by < 0 ? 0 : (by > 255 ? 255 : by);
+  }
+  rec._cmMask={grid:sdf, lo:lo, hi:hi, size:[hi[0]-lo[0],hi[1]-lo[1],hi[2]-lo[2]],
+               n:n, vox:vox, band:CM_BAND};
   return rec._cmMask;
+}
+/* v33.66：JS 版"查距离场"（与 GLSL cmMaskSD 同一套编码），给回归测试/探针用。
+   返回单位 = 格：<0 体内、0≈表面、>0 体外，包围盒外一律 +2。 */
+function cmMaskSDAt(pe, P){
+  var rec = null;
+  for(var r=0;r<customModels.length;r++) if(customModels[r].id === pe.id){ rec = customModels[r]; break; }
+  var m = cmMaskOf(rec); if(!m) return 2;
+  var sz = m.size, lo = m.lo, N = CM_GRID_N;
+  var f0=(P.x-pe.x-lo[0])/Math.max(1e-6,sz[0]), f1=(P.y-pe.y-lo[1])/Math.max(1e-6,sz[1]),
+      f2=(P.z-pe.z-lo[2])/Math.max(1e-6,sz[2]);
+  if(f0<0||f0>=1||f1<0||f1>=1||f2<0||f2>=1) return 2;
+  var g0=Math.min(0.999999,f0)*N-0.5, g1=Math.min(0.999999,f1)*N-0.5, g2=Math.min(0.999999,f2)*N-0.5;
+  var b0=Math.floor(g0), b1=Math.floor(g1), b2=Math.floor(g2);
+  var t0=g0-b0, t1=g1-b1, t2=g2-b2;
+  function tx(ix,iy,iz){
+    ix=ix<0?0:(ix>N-1?N-1:ix); iy=iy<0?0:(iy>N-1?N-1:iy); iz=iz<0?0:(iz>N-1?N-1:iz);
+    return m.grid[(iz*N+iy)*N+ix]/255;
+  }
+  var c000=tx(b0,b1,b2),     c100=tx(b0+1,b1,b2),   c010=tx(b0,b1+1,b2),   c110=tx(b0+1,b1+1,b2);
+  var c001=tx(b0,b1,b2+1),   c101=tx(b0+1,b1,b2+1), c011=tx(b0,b1+1,b2+1), c111=tx(b0+1,b1+1,b2+1);
+  var v00=c000+(c100-c000)*t0, v10=c010+(c110-c010)*t0;
+  var v01=c001+(c101-c001)*t0, v11=c011+(c111-c011)*t0;
+  var v0=v00+(v10-v00)*t1, v1=v01+(v11-v01)*t1;
+  return (v0+(v1-v0)*t2)*4-2;
+}
+/* 点到三角形的最近距离平方（Ericson《Real-Time Collision Detection》的紧凑写法） */
+function cmPointTriD2(px,py,pz, ax,ay,az, bx,by,bz, cx,cy,cz){
+  var abx=bx-ax, aby=by-ay, abz=bz-az, acx=cx-ax, acy=cy-ay, acz=cz-az;
+  var apx=px-ax, apy=py-ay, apz=pz-az;
+  var d1=abx*apx+aby*apy+abz*apz, d2=acx*apx+acy*apy+acz*apz;
+  if(d1<=0 && d2<=0) return apx*apx+apy*apy+apz*apz;
+  var bpx=px-bx, bpy=py-by, bpz=pz-bz;
+  var d3=abx*bpx+aby*bpy+abz*bpz, d4=acx*bpx+acy*bpy+acz*bpz;
+  if(d3>=0 && d4<=d3) return bpx*bpx+bpy*bpy+bpz*bpz;
+  var vc=d1*d4-d3*d2;
+  if(vc<=0 && d1>=0 && d3<=0){
+    var v=d1/(d1-d3), qx=ax+v*abx, qy=ay+v*aby, qz=az+v*abz;
+    return (px-qx)*(px-qx)+(py-qy)*(py-qy)+(pz-qz)*(pz-qz);
+  }
+  var cpx=px-cx, cpy=py-cy, cpz=pz-cz;
+  var d5=abx*cpx+aby*cpy+abz*cpz, d6=acx*cpx+acy*cpy+acz*cpz;
+  if(d6>=0 && d5<=d6) return cpx*cpx+cpy*cpy+cpz*cpz;
+  var vb=d5*d2-d1*d6;
+  if(vb<=0 && d2>=0 && d6<=0){
+    var w=d2/(d2-d6), qx2=ax+w*acx, qy2=ay+w*acy, qz2=az+w*acz;
+    return (px-qx2)*(px-qx2)+(py-qy2)*(py-qy2)+(pz-qz2)*(pz-qz2);
+  }
+  var va=d3*d6-d5*d4;
+  if(va<=0 && (d4-d3)>=0 && (d5-d6)>=0){
+    var w2=(d4-d3)/((d4-d3)+(d5-d6));
+    var qx3=bx+w2*(cx-bx), qy3=by+w2*(cy-by), qz3=bz+w2*(cz-bz);
+    return (px-qx3)*(px-qx3)+(py-qy3)*(py-qy3)+(pz-qz3)*(pz-qz3);
+  }
+  var den=1/(va+vb+vc), vv=vb*den, ww=vc*den;
+  var qx4=ax+abx*vv+acx*ww, qy4=ay+aby*vv+acy*ww, qz4=az+abz*vv+acz*ww;
+  return (px-qx4)*(px-qx4)+(py-qy4)*(py-qy4)+(pz-qz4)*(pz-qz4);
 }
 /* 把在场实例各自模型的体素表打进同一张 atlas。槽号严格等于 activeCustomBodies() 下标，
    setCmSpecs 也按这个下标取 —— 保证纹理里放的和 uniform 里说的是同一个模型。 */
 function cmBuildMaskAtlas(ms){
   if(!_cmBlankTex){
-    _cmBlankTex=new THREE.DataTexture(new Uint8Array([0,0,0,255]),1,1,THREE.RGBAFormat);
+    /* v33.66：空图存"全部在体外"（255）—— 万一被采样到也不会把材料整片丢掉 */
+    _cmBlankTex=new THREE.DataTexture(new Uint8Array([255,255,255,255]),1,1,THREE.RGBAFormat);
     _cmBlankTex.needsUpdate=true;
   }
   if(!ms || !ms.length) return _cmBlankTex;
@@ -8475,7 +8616,8 @@ function cmBuildMaskAtlas(ms){
       var tx=iz%CM_TC, ty=Math.floor(iz/CM_TC);
       for(var iy=0; iy<N; iy++){
         var src=(iz*N+iy)*N, dst=((soy+ty*N+iy)*W + sox+tx*N);
-        for(var ix=0; ix<N; ix++) data[(dst+ix)*4]=G[src+ix] ? 255 : 0;
+        /* v33.66：R 通道直接存"符号距离码"（128≈表面），不再是 0/1 占用 */
+        for(var ix=0; ix<N; ix++) data[(dst+ix)*4]=G[src+ix];
       }
     }
   }
@@ -8639,6 +8781,38 @@ function cmBodyPoints(pe){
   var res=[], ox=pe.x, oy=pe.y, oz=pe.z;
   for(var q2=0;q2<pe._ptsLocal.length;q2++){
     var A=pe._ptsLocal[q2];
+    res.push(new THREE.Vector3(A[0]+ox, A[1]+oy, A[2]+oz));
+  }
+  return res;
+}
+/* v33.66：**外表面壳点**（每个采样三角面的形心沿法向 +0.6mm）。
+   分块是靠"撒点 + 记符号位"发现区域的：只撒体内点，"贴着别的体表面、但落在体外"
+   那一圈薄区域永远采不到 —— 那一块 cell 就不存在，切完是一片没有材料的空洞（"空心"）。
+   壳点专门采这一圈。★ 只在**场上有拼装部件**时才用（见 rebuildCells）：
+   否则"模型之外"这片空气也会被当成一块分块，凭空多出一块可选区域。 */
+function cmBodyShellPoints(pe){
+  var idx = cmBodyIndex(pe);
+  if(!idx) return [];
+  if(!pe._shellLocal){
+    var out=[], T=idx.tris, n=idx.n, i;
+    var stride = Math.max(1, Math.ceil(n/260));
+    for(i=0;i<n;i+=stride){
+      var o=i*9;
+      var ax=T[o], ay=T[o+1], az=T[o+2];
+      var ux=T[o+3]-ax, uy=T[o+4]-ay, uz=T[o+5]-az;
+      var vx=T[o+6]-ax, vy=T[o+7]-ay, vz=T[o+8]-az;
+      var nx=uy*vz-uz*vy, ny=uz*vx-ux*vz, nz=ux*vy-uy*vx;
+      var nl=Math.sqrt(nx*nx+ny*ny+nz*nz);
+      if(!(nl>1e-12)) continue;
+      var gx=(ax+T[o+3]+T[o+6])/3, gy=(ay+T[o+4]+T[o+7])/3, gz=(az+T[o+5]+T[o+8])/3;
+      var hx=gx+nx/nl*0.6, hy=gy+ny/nl*0.6, hz=gz+nz/nl*0.6;
+      if(cmRayParity(idx,hx,hy,hz)===0) out.push([hx,hy,hz]);
+    }
+    pe._shellLocal = out;
+  }
+  var res=[], ox=pe.x, oy=pe.y, oz=pe.z;
+  for(var q=0;q<pe._shellLocal.length;q++){
+    var A=pe._shellLocal[q];
     res.push(new THREE.Vector3(A[0]+ox, A[1]+oy, A[2]+oz));
   }
   return res;
