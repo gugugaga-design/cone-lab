@@ -2482,6 +2482,11 @@ function estimateSampleSpacing(pts){
   return ds[Math.floor(ds.length/2)] || 4.0;
 }
 
+/* v33.70：分块裁剪平面的外扩量（世界 mm）。三维裁剪按"点到平面距离 >= 0 保留"，
+   距离恰为 0（表面与平面共面）时 float32 的符号会逐像素抖动 → 针孔麻点。
+   外扩这么一点点，共面的片元就稳定落在"保留"侧。 */
+var CLIP_EPS = 0.004;
+
 function rebuildCells(){
   var act = activeFaceData(), cs = activeCyls(), ps = activeParts();
   /* v33.64：自建模型（放置出来的实例）也要参与分块 —— 用户的原话是
@@ -2682,6 +2687,12 @@ function rebuildCells(){
       if(cs[hi2].hole && pk.cm[cs[hi2]._id] === 3){ inHolePlug = true; break; }
     }
     var sel0 = (inHolePlug && pickSel[k] === undefined) ? false : selInherit(k, pk, 0);
+    /* v33.70：每条裁剪平面统一**向外扩 0.004mm**（constant += eps）。
+       平面边界正好压在实体表面上时（最典型：自建模型就是照这个部件烘出来的、
+       顶面同高，而部件端面平面恰好落在同一高度），三维裁剪的判定在 float32 里
+       逐像素抖动 → 那一整面被打出一片**针孔**（透出背景/背面 = 用户说的"麻点"）。
+       外扩之后，压在平面上的片元两侧都保留，谁也不丢；0.004mm 的重复覆盖肉眼不可见。 */
+    for(var pe5=0; pe5<planes.length; pe5++) planes[pe5].constant += CLIP_EPS;
     return {key:k, planes:planes, cyls:cylSpecs, parts:partSpecs,
             ownerPart: ownerPart, ownerPe: ownerPe, bodies: bodies,
             pts: ptsBySplitKey[k] || null,
@@ -3415,29 +3426,36 @@ var CYL_GLSL = [
 "  vec3 t = 2.0 * cross(q.xyz, v);",
 "  return v + q.w * t + cross(q.xyz, t);",
 "}",
-"bool partInside(int i, vec3 v){",
+/* v33.70：带余量的"部件内"判定。e>0 把形状**收缩**（要"明显在里面"才算里面），
+   e<0 膨胀。用途：裁剪平面/体积边界正好压在实体表面上时（自建模型照部件烘出来、
+   顶面同高），float32 的距离符号逐像素抖动 → 那一面被丢成一片**针孔麻点**。
+   给一点余量，边界上任一侧的片元都能稳定落在"保留"侧。
+   各形状的余量都从尺寸里减，语义与原来的 partInside 完全一致（e=0 时逐位相同）。 */
+"bool partInsideM(int i, vec3 v, float e){",
 "  float ty = uPartC[i].w;",
 "  if(ty < 0.5) return false;",
 "  vec3 q = qrot(uPartQ[i], v - uPartC[i].xyz);",
 "  vec4 d = uPartD[i];",
+"  float dx = d.x - e, dy = d.y - e, dz = d.z - e;",
 "  float rho = length(q.xz);",
-"  if(ty < 1.5) return length(q) <= d.x;",                                    // 球
-"  if(ty < 2.5) return (abs(q.x)<=d.x && abs(q.y)<=d.y && abs(q.z)<=d.z);",   // 长方体
-"  if(ty < 3.5) return (abs(q.x)<=d.x && abs(q.y)<=d.x && abs(q.z)<=d.x);",   // 正方体
-"  if(ty < 4.5) return (abs(q.y)<=d.y && rho<=d.x);",                         // 圆柱
-"  if(ty < 5.5){ float t=(q.y+d.y)/(2.0*d.y); float rr=d.x*(1.0-t);",         // 圆锥
-"    return (abs(q.y)<=d.y && rho<=rr); }",
-"  if(ty < 6.5){ float t=(q.y+d.y)/(2.0*d.y); float rr=mix(d.x, d.z, t);",     // 圆台
-"    return (abs(q.y)<=d.y && rho<=rr); }",
-"  if(ty < 7.5) return (q.y>=-0.001 && length(q)<=d.x);",                     // 半球
-"  if(ty < 8.5){ float t=(q.y+d.y)/(2.0*d.y); float rr=d.x*(1.0-t);",         // 正三棱锥
-"    if(abs(q.y)>d.y || rho>rr) return false;",
+"  if(ty < 1.5) return length(q) <= dx;",                                     // 球
+"  if(ty < 2.5) return (abs(q.x)<=dx && abs(q.y)<=dy && abs(q.z)<=dz);",      // 长方体
+"  if(ty < 3.5) return (abs(q.x)<=dx && abs(q.y)<=dx && abs(q.z)<=dx);",      // 正方体
+"  if(ty < 4.5) return (dy > 0.0 && abs(q.y)<=dy && rho<=dx);",               // 圆柱
+"  if(ty < 5.5){ float t=(q.y+d.y)/(2.0*d.y); float rr=dx*(1.0-t);",          // 圆锥
+"    return (dy > 0.0 && abs(q.y)<=dy && rho<=rr); }",
+"  if(ty < 6.5){ float t=(q.y+d.y)/(2.0*d.y); float rr=mix(dx, dz, t);",      // 圆台
+"    return (dy > 0.0 && abs(q.y)<=dy && rho<=rr); }",
+"  if(ty < 7.5) return (q.y>=-0.001 && length(q)<=dx);",                     // 半球
+"  if(ty < 8.5){ float t=(q.y+d.y)/(2.0*d.y); float rr=dx*(1.0-t);",          // 正三棱锥
+"    if(dy <= 0.0 || abs(q.y)>dy || rho>rr) return false;",
 "    float half3=1.0471975512; float ang=atan(q.x,q.z);",
 "    float a=mod(ang+half3, 2.0*half3)-half3;",
 "    return rho <= rr*cos(half3)/cos(a); }",
-"  float t=(q.y+d.y)/(2.0*d.y);",                                             // 槽（近似）
-"  return (abs(q.z)<=d.z && q.y<=0.0 && rho<=d.x && rho>=d.y);",
+"  float t=(q.y+d.y)/(2.0*d.y);",                                            // 槽（近似）
+"  return (abs(q.z)<=dz && q.y<=0.0 && rho<=dx && rho>=d.y+e);",
 "}",
+"bool partInside(int i, vec3 v){ return partInsideM(i, v, 0.0); }",
 /* v33.66：查"自建模型的窄带符号距离场"（与 JS 侧 cmMaskOf 同一套编码）。
    返回值单位 = 格：<0 体内、0≈表面、>0 体外，带外饱和到 ±2。
    atlas 布局：6 个槽按 3列×2行 摆；每槽把 N 张 Z 切片按 8列×8行 平铺。
@@ -3455,7 +3473,11 @@ var CYL_GLSL = [
 "  if(abs(uCmKeep[i].x) < 0.5 || uCmPos[i].w < 0.5) return 2.0;",
 "  vec3 sz = max(uCmSz[i].xyz, vec3(1e-6));",
 "  vec3 f = (w - uCmPos[i].xyz - uCmLo[i].xyz) / sz;",
-"  if(f.x<0.0 || f.x>=1.0 || f.y<0.0 || f.y>=1.0 || f.z<0.0 || f.z>=1.0) return 2.0;",
+"  /* ★ 允许 2% 的越界再夹回：模型的顶面/侧面正好压在包围盒边界上时（自建模型就是照",
+"     这个部件烘出来的，边界完全重合），f 会算出 1.0000001 这种值。原来 f>=1.0 直接",
+"     判「体外」，keep=-1 的块会在那一整圈表面被丢成密集麻点（v33.69 软光栅里顶面那片点）。 */",
+"  if(f.x<-0.02 || f.x>1.02 || f.y<-0.02 || f.y>1.02 || f.z<-0.02 || f.z>1.02) return 2.0;",
+"  f = clamp(f, 0.0, 1.0);",
 "  float N = uCmAtlas.z;",
 "  vec3 g = clamp(f, 0.0, 0.999999) * N - 0.5;",
 "  vec3 b = floor(g), t = g - b;",
@@ -3535,7 +3557,9 @@ var CYL_GLSL = [
 "  for(int j=0;j<4;j++){",
 "    float pk = uPartK[j].x;",
 "    if(abs(pk) > 0.5){",
-"      bool pins = partInside(j, vCylW);",
+"      /* 余量：保留外部时收缩（只丢「明确在里面」的），保留内部时膨胀。",
+"         0.01mm 就够压住 float32 在共面边界上的符号抖动。 */",
+"      bool pins = partInsideM(j, vCylW, pk > 0.0 ? 0.01 : -0.01);",
 "      if(pk > 0.0){ if(pins) discard; } else { if(!pins) discard; }",
 "    }",
 "  }",
@@ -3587,7 +3611,7 @@ function cylUniformsOf(mat){
       "#include <clipping_planes_fragment>",
       "#include <clipping_planes_fragment>\n  cylDiscard();");
   };
-  mat.customProgramCacheKey = function(){ return "cylclip7"; };   // v33.67：自建模型改窄带距离场 + 三线性插值
+  mat.customProgramCacheKey = function(){ return "cylclip8"; };   // v33.70：partInside 加余量（针孔麻点）
   mat.needsUpdate = true;
   return u;
 }
@@ -8547,7 +8571,9 @@ function cmMaskSDAt(pe, P){
   var sz = m.size, lo = m.lo, N = CM_GRID_N;
   var f0=(P.x-pe.x-lo[0])/Math.max(1e-6,sz[0]), f1=(P.y-pe.y-lo[1])/Math.max(1e-6,sz[1]),
       f2=(P.z-pe.z-lo[2])/Math.max(1e-6,sz[2]);
-  if(f0<0||f0>=1||f1<0||f1>=1||f2<0||f2>=1) return 2;
+  /* 与 GLSL cmMaskSD 同一容忍度：贴包围盒表面的点不能被判成「体外」 */
+  if(f0<-0.02||f0>1.02||f1<-0.02||f1>1.02||f2<-0.02||f2>1.02) return 2;
+  f0=Math.max(0,Math.min(1,f0)); f1=Math.max(0,Math.min(1,f1)); f2=Math.max(0,Math.min(1,f2));
   var g0=Math.min(0.999999,f0)*N-0.5, g1=Math.min(0.999999,f1)*N-0.5, g2=Math.min(0.999999,f2)*N-0.5;
   var b0=Math.floor(g0), b1=Math.floor(g1), b2=Math.floor(g2);
   var t0=g0-b0, t1=g1-b1, t2=g2-b2;
