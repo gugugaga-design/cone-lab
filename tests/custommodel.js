@@ -469,8 +469,33 @@ const jScreen = JSON.parse(R(`(function(){
 })()`));
 tapAt(jScreen[0], jScreen[1]);
 const jHidden = R("JSON.stringify(Object.keys(pickSel).filter(function(k){return pickSel[k]===false;}))");
-check("点可见的青色部分 → 藏掉的正是这块（不是被着色器丢弃的那块）",
-  JSON.parse(jHidden).indexOf(jKey) >= 0 && !/p\d+:3\|m\d+:1/.test(jHidden), jHidden);
+/* v33.74：点选的作用单元从"单个 cell"改成"同一个体 + 同一组面侧"。
+   原因：同一个体的材料会被另一个体的体积再切一刀，被挡住的那半**永远点不到**
+   （用户："点黄色模型上半部分，上半部分只消失了其中一部分"、"重叠部分仍然无法切除"）。
+   所以这里断言：点到的那块进了隐藏集合，并且被藏的整组都是"同一个体同一侧"，
+   其中**包含被模型挡住的那半**（`p*:3|m*:1`）。 */
+const jHiddenArr = JSON.parse(jHidden);
+const jGrp = JSON.parse(R(`(function(){
+  var g = cellGroupOf(${JSON.stringify(jKey)});
+  var arr = ${JSON.stringify(jHiddenArr)};
+  return JSON.stringify({
+    has: arr.indexOf(${JSON.stringify(jKey)}) >= 0,
+    allSame: arr.every(function(k){ return cellGroupOf(k) === g; }),
+    n: arr.length,
+    /* 组里必须同时包含"另一个体的内/外两侧"的多段（= 有一次点击切不到的那半） */
+    segs: (function(){
+      var o = {};
+      arr.forEach(function(k){ var q = k.split("||")[1] || ""; o[q] = 1; });
+      return Object.keys(o).length;
+    })(),
+    members: cellsOfGroup(g).length
+  });
+})()`));
+check("点可见的青色部分 → 藏掉这块所在的**整组**（含被模型挡住的那半，用户点不到的部分）",
+  jGrp.has && jGrp.allSame, jHidden);
+check("整组跨过了『另一个体切出来的那几段』（含点不到的那半），一次点击即可切除重叠部分",
+  jGrp.n >= 2 && jGrp.segs >= 2 && jGrp.members === jGrp.n,
+  "藏 " + jGrp.n + " 块 / 组内 " + jGrp.members + " 块 / 跨 " + jGrp.segs + " 段");
 check("藏掉之后该块进入幽灵层（还能点回来）",
   R(`(function(){var n=0;cellGroup.children.forEach(function(m){
     if(m.userData.front && m.userData.ck==='${jKey}' && m.material.opacity<0.1)n++;});return n;})()`) >= 1);

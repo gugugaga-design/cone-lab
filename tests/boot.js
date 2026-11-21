@@ -193,6 +193,7 @@ function boot(opts){
     "dragLocked","frozen","snapState","applySnapshot","snapTipText","renderer","camera","orthoCam",
     "activeCam","controls","setView","resetView","curveTagSprites","pickSel","bodyTint","showXlines",
     "buildCellVis","rebuildCells","pickAllBtn","activeCyls","bodyLen","cylSpecOf","disposeObj",
+    "cellGroupOf","cellsOfGroup",
     "slotGeom","partDefaults","partGeo","densifyPolyline","makeCurveLabel","classifyCurve",
     "updatePickInfo","updatePickInfoText","updateHint","nextId","flipped","applyFlip","geo",
     "coneF","coneB","matFront","raycaster","ndcFromEvent","markView","curView","useOrthoCam",

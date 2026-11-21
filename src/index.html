@@ -6582,6 +6582,40 @@ function cellOfKey(k){
   for(var c=0;c<cells.length;c++) if(cells[c].key === k) return cells[c];
   return null;
 }
+/* v33.74（用户："重叠部分仍然无法切除" "点黄色模型上半部分，只消失了其中一部分"）：
+   **分块太细，而且有一半根本点不到。**
+   同一个体的材料会被"另一个体的体积"再切一刀（部件在模型内 / 模型外、模型在部件内 / 部件外），
+   于是"模型的上半部分"其实是 2~4 个 cell：露在外面的能点，被另一个体挡住的永远点不到
+   —— 用户点一下就只消失了一部分，剩下那半截（正好是重叠区）再也切不掉。
+   所以点选的作用单元改成 **「同一个体 + 同一组面侧」**（`cellGroupOf`）：
+   点哪一块，就把这个体在**这一侧**的材料整段一起隐藏/恢复（含被挡住的那几块）。
+   面侧（`f<id>:<bit>`）仍然区分 —— 逐个面切、逐侧保留的语义不变。 */
+function cellGroupOf(k){
+  var kk = typeof k === "string" ? k : (k && k.key);
+  var c = typeof k === "string" ? cellOfKey(k) : k;
+  if(!c) return null;
+  var pk = parseCellKey(kk);
+  /* 签名 = **所有"切割特征"的侧别**：面（fm）+ 贯穿体（cm）。
+     只用面的话，纯贯穿体切割（key 形如 "|c1:1|"）会全部并成一组，一点就全没了。 */
+  var fids = Object.keys(pk.fm).sort(function(a,b){ return (+a) - (+b); });
+  var cids = Object.keys(pk.cm).sort(function(a,b){ return (+a) - (+b); });
+  var sig = fids.map(function(id){ return "f" + id + ":" + (pk.fm[id] ? 1 : 0); }).join(",")
+          + "||"
+          + cids.map(function(id){ return "c" + id + ":" + (pk.cm[id] || 0); }).join(",");
+  var own = (c.ownerPart != null) ? ("p" + c.ownerPart)
+          : (c.ownerPe ? ("m" + (c.ownerPe._id || c.ownerPe.id || "0")) : "main");
+  /* 没有任何切割特征时（`||p1:0#0` 这种纯按连通块分的）——不做整组，
+     每一块就是自己一组。否则"点一下整个部件全没了"，那是另一个 bug。 */
+  if(!fids.length && !cids.length) return own + "|#" + kk;
+  return own + "|" + sig;
+}
+/* 同一组的全部分块（含被别的体挡住、点不到的那些） */
+function cellsOfGroup(g){
+  if(!g) return [];
+  var out = [];
+  for(var i=0;i<cells.length;i++) if(cellGroupOf(cells[i]) === g) out.push(cells[i]);
+  return out;
+}
 /* 最前面的那块已经被隐藏时，沿视线继续往里走，找后面第一块"还露着"的 ——
    否则后面的块永远点不到（点它只会把前面刚藏起来的那块又点回来）。 */
 function marchToVisibleCell(p0, rd, act){
@@ -6873,6 +6907,22 @@ function tapPick(e){
     if(ra !== rb) return ra - rb;
     return a.dist - b.dist;
   });
+  /* v33.74：同一个组的多个 cell 只留最近的那个。
+     否则原地连点会在"同一组的两块"之间来回切 —— 屏幕上一点变化都没有（等于又回到 v33.71 前）。 */
+  (function(){
+    var seen = {}, out = [];
+    for(var i=0;i<cands.length;i++){
+      var cd = cands[i];
+      if(cd.kind === "cell"){
+        var g = cellGroupOf(cd.key);
+        if(g && seen[g]) continue;
+        if(g) seen[g] = 1;
+      }
+      out.push(cd);
+    }
+    cands.length = 0;
+    Array.prototype.push.apply(cands, out);
+  })();
 
   /* ---- 原地连点 → 在候选之间轮换；换目标 → 从"最前面那块"重新开始 ----
      v33.71（用户第 4 步："第一次点自建模型，上半部分不消失，再点一次才消失"）：
@@ -6921,9 +6971,12 @@ function tapPick(e){
   var curCell = cellOfKey(key2);
   var curSel = curCell ? (curCell.sel !== false) : (pickSel[key2] !== false);
   var newSel = !curSel;
-  pickSel[key2] = newSel;          // 明确记下用户的选择（true = 保留）
-  // 同步写回 cells（buildCellVis 只读 c.sel，不写这儿会出现“点了没反应”）
-  cells.forEach(function(c){ if(c.key === key2) c.sel = newSel; });
+  /* v33.74：**整组一起切**（同一个体 + 同一组面侧），
+     否则被另一个体挡住的那几块永远点不到，"上半部分只消失一部分"。 */
+  var grpCells = cellsOfGroup(cellGroupOf(key2));
+  if(!grpCells.length) grpCells = curCell ? [curCell] : [];
+  grpCells.forEach(function(c){ c.sel = newSel; pickSel[c.key] = newSel; });
+  if(!grpCells.length) pickSel[key2] = newSel;
   buildCellVis();
   buildCylVis();      // 变实的那块"材料"要跟着隐藏/回来，所以相贯体可视化也要重建
   commitUndo();       // 隐藏/显示算一步
@@ -6932,8 +6985,14 @@ function tapPick(e){
 }
 /* 点选模式：面板里常驻显示“共 N 部分 / 已隐藏 x”，点选后再弹一次提示 */
 function pickHiddenCount(){
-  var h = 0;
-  cells.forEach(function(c){ if(c.sel === false) h++; });
+  /* v33.74：一次点击切的是"一整组"，所以按**组**计数（否则一次点下去可能报"已隐藏 3 个"）。 */
+  var seen = {}, h = 0;
+  cells.forEach(function(c){
+    if(c.sel !== false) return;
+    var g = cellGroupOf(c);
+    if(g){ if(seen[g]) return; seen[g] = 1; }
+    h++;
+  });
   parts.forEach(function(p){ if(p.hidden) h++; });
   return h;
 }
@@ -6960,7 +7019,9 @@ function updatePickInfo(){
   var hidden = pickHiddenCount();
   if(hidden === 0) return;
   var pt = parts.filter(function(p){ return p.hidden; }).length;
-  var kept = (cells.length - cells.filter(function(c){ return c.sel === false; }).length) + (parts.length - pt);
+  var gAll = {}, gHid = {};
+  cells.forEach(function(c){ var g = cellGroupOf(c) || c.key; gAll[g] = 1; if(c.sel === false) gHid[g] = 1; });
+  var kept = (Object.keys(gAll).length - Object.keys(gHid).length) + (parts.length - pt);
   snapTipText("已隐藏 " + hidden + " 个部分" + (pt ? "（拼装 " + pt + "）" : "") + "，保留 " + kept + " 个（点“全部保留”恢复）", 1800);
 }
 function attachDrag(){
