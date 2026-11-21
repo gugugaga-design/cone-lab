@@ -3580,7 +3580,7 @@ function cylUniformsOf(mat){
       "#include <clipping_planes_fragment>",
       "#include <clipping_planes_fragment>\n  cylDiscard();");
   };
-  mat.customProgramCacheKey = function(){ return "cylclip6"; };   // v33.65：加了自建模型体素裁剪（6 槽）
+  mat.customProgramCacheKey = function(){ return "cylclip7"; };   // v33.67：自建模型改窄带距离场 + 三线性插值
   mat.needsUpdate = true;
   return u;
 }
