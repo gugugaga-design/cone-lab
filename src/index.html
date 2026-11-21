@@ -2933,14 +2933,21 @@ function buildCellVis(){
     }
     var ownSpec0 = c.ownerPart;
     var cmSpecs = msC.length ? cmSpecsOf(c, msC) : null;   // v33.65：一块算一次，正反/封盖共用
+    /* v33.68：**共面时的胜负要固定**。两个体的表面正好重合（例如自建模型就是
+       照这个部件烘出来的、高度也一样）时，两块分块网格在同一深度上打架 ——
+       屏幕上是"一片麻点"，用户会当成毛边。按归属给一点点 polygonOffset
+       （主立体 0 / 部件 -1 / 自建模型 -2，越负越靠前），共面就稳定归最靠前的那一类。 */
+    var poF = ownCm ? -2 : (ownPart ? -1 : 0);
     var mk = function(front){
       var sel = c.sel;
       var m = new THREE.Mesh(useGeo, front
         ? new THREE.MeshLambertMaterial({color:colF, side:THREE.FrontSide,
             clippingPlanes:c.planes, clipIntersection:false,
+            polygonOffset:true, polygonOffsetFactor:poF, polygonOffsetUnits:poF,
             transparent:!sel, opacity:sel?1:0.06, depthWrite:sel})
         : new THREE.MeshBasicMaterial({color:sel?colB:0x39485f, side:THREE.BackSide,
             clippingPlanes:c.planes, clipIntersection:false,
+            polygonOffset:true, polygonOffsetFactor:poF, polygonOffsetUnits:poF,
             transparent:!sel, opacity:sel?1:0.10, depthWrite:sel}));
       m.userData.ck = c.key;
       m.userData.front = front;
