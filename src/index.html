@@ -2857,7 +2857,12 @@ function buildCellVis(){
   var msC = activeCustomBodies(), maskTex = msC.length ? cmBuildMaskAtlas(msC) : null;
   var capSpecs = csC.map(function(cc){ return cylSpecOf(cc, 1); });   // 盖子上把贯穿体全部挖掉
   var capPartSpecs = psC.map(function(pp){ return partSpecOf(pp, 1); });  // 盖子上把部件挖掉
-  /* 主立体几何是否可用（lab 模式没有主立体 → geo 是空几何，0 顶点） */
+  /* v33.72：把颜色按比例压暗（保持色相）—— 用于"同一材料的暗面" */
+function dimHex(hex, k){
+  var r = Math.round(((hex>>16)&255)*k), g = Math.round(((hex>>8)&255)*k), b = Math.round((hex&255)*k);
+  return (r<<16) | (g<<8) | b;
+}
+/* 主立体几何是否可用（lab 模式没有主立体 → geo 是空几何，0 顶点） */
   var mainUsable = !!(cellGeo && cellGeo.attributes && cellGeo.attributes.position &&
                       cellGeo.attributes.position.count > 0);
   /* v33.3（问题①的真正元凶）：**点选模式下必须隐藏"部件外壳"**。
@@ -2936,14 +2941,18 @@ function buildCellVis(){
     var colF, colB;
     if(ownPart){
       colF = tintPart ? 0x12d6c8 : 0x8fd8ff;      // 变实：青色实体 / 默认：半透明青蓝
-      colB = tintPart ? 0x0a7a72 : 0x2f6a8f;      // 对应的暗调背面
     } else if(ownCm){
       colF = 0xe7974b;                            // 自建模型分块：模型本体色
-      colB = 0x5b3413;
     } else {
       colF = 0xf08c42;                            // 主立体分块：模型橙（不变）
-      colB = 0x4b2a14;
     }
+    /* v33.72（用户："切除完那个蓝色的阴影仍然存在"，截图里是深蓝/深青的内壁扇贝）：
+       背面（内壁）原来用的是**另一套深色**（部件 0x2f6a8f 深蓝 / 模型 0x5b3413 深棕 /
+       主立体 0x4b2a14 深棕）。用户看到"切掉一块之后透出一片蓝"就是它 ——
+       那是他自己的材料内壁被涂成了不相关的蓝色。
+       现在背面一律用**正面色的暗调**（同色相、约 62% 亮度）：材质颜色一致，
+       看进去就是"同一块材料的暗面"，读起来是实心；不再有第二种颜色冒充阴影。 */
+    colB = dimHex(colF, 0.62);
     var ownSpec0 = c.ownerPart;
     var cmSpecs = msC.length ? cmSpecsOf(c, msC) : null;   // v33.65：一块算一次，正反/封盖共用
     /* v33.68：**共面时的胜负要固定**。两个体的表面正好重合（例如自建模型就是
@@ -3015,8 +3024,10 @@ function buildCellVis(){
            跳过自己那一条（与上面分块网格 mk() 里 skip ownSpec 同一套逻辑），
            其余部件/贯穿体的裁剪照常保留。 */
         setPartSpecs(capMat, capPartSpecs.filter(function(_, ii){ return ii !== c.ownerPart; }));
-        /* v33.65：封盖同样要被自建模型体积裁掉，否则重叠处盖子盖住模型 */
-        setCmSpecs(capMat, cmSpecs, maskTex);
+        /* v33.65：封盖同样要被自建模型体积裁掉，否则重叠处盖子盖住模型。
+           v33.72：封盖是**正好躺在交界面上**的平面，用"贴面模式"（不留 0.6 格余量），
+           否则它会从交界另一侧探出半格，在模型轮廓上留一条青色虚线。 */
+        setCmSpecs(capMat, cmSpecs, maskTex, true);
         capMat.depthTest = true;
         var cm = new THREE.Mesh(g, capMat);
         cm.renderOrder = 1012;
@@ -3036,13 +3047,12 @@ function buildCellVis(){
        裁剪用本块原有的规格（planes + cyls + parts + cm）：
        v33.70 给 partInsideM / cmMaskSD 都加了余量，贴在表面上的片元不会被边界抖动误裁，
        所以这一层补面正好落在"本块材料范围内"，不会糊到别的块上。 */
-    if(c.sel){
-      /* 补面沿 B 的表面法向**几何偏移 0.06mm**：
-         keep=-1（本块材料在 B 内部）→ 往体内偏，B 自己的表面正好挡在它前面；
-         keep=+1（材料在 B 外部）→ 往体外偏。
-         只用 polygonOffset 不够稳（斜率项在共面时互相抵消，单位项又太小），
-         直接错开几何最可靠。 */
-      var mkBodyCap = function(geo, color){
+    {
+      /* 补面沿 B 的表面法向**往体内几何偏移 0.06mm**（见下面 capGeoOf）：
+         体可见时被自己的表面挡住，体隐藏时才露出来当实心切口。
+         只用 polygonOffset 不够稳（斜率项在共面时互相抵消、单位项又太小），
+         必须直接错开几何。 */
+      var mkBodyCap = function(geo, color, op, of){
         var mat = new THREE.MeshLambertMaterial({
           color:color, side:THREE.DoubleSide,
           clippingPlanes:c.planes, clipIntersection:false});
@@ -3050,9 +3060,13 @@ function buildCellVis(){
         setPartSpecs(mat, c.parts || []);
         setCmSpecs(mat, cmSpecs, maskTex);
         mat.depthTest = true;
+        /* op 预留：万一以后要让补面半透明（隐藏块当幽灵用）。现在恒为 1 ——
+           洞的壁必须不透光，否则又会看到里面的背面。 */
+        if(op < 1){ mat.transparent = true; mat.opacity = op; mat.depthWrite = false; }
         var mm = new THREE.Mesh(geo, mat);
         mm.renderOrder = 1011;
         mm.userData.ck = c.key; mm.userData.capBody = true;
+        mm.userData.capBodyOf = of || "";     // "p3" / "m1"：这层补面是**哪个体**的表面
         cellGroup.add(mm);
       };
       var capGeoOf = function(kind, idx, keep){
@@ -3062,20 +3076,42 @@ function buildCellVis(){
         var src = (kind === "p")
           ? (function(){ var g = partGeoOf(psC[idx]).clone(); g.applyMatrix4(partMatrix(psC[idx])); return g; })()
           : cmBodyGeoWorld(msC[idx]);
-        var g2 = offsetGeoAlongNormals(src, keep > 0 ? 0.06 : -0.06);
+        /* v33.72：**一律往体内偏 0.06mm**。原来的"keep>0 往体外偏"会让补面跑到体表面
+           前面 0.06mm —— 体正常显示时它反而挡住自己的表面（深度胜负随视角变化），
+           就是用户说的"那块颜色还跟着转"。往内偏则永远在体表面之后：
+           体可见 → 被自己表面挡住（完全看不见）；体隐藏 → 才露出来当实心切口。 */
+        var g2 = offsetGeoAlongNormals(src, -0.06);
         cache[key] = g2; cellOwnGeos.push(g2);
         return g2;
       };
+      /* v33.72：**隐藏的块也要补**（而且要不透明）—— 用户"切除后有蓝色阴影"的真正原因：
+         某块被隐藏后，它原本占据的空间变成一个**洞**；洞的壁是"另一个体的表面"
+         （部件与模型的分界面）。这块是隐藏的，之前不补 → 洞敞着 → 看到的是本体的
+         **背面（内壁）**，边界还按三角面走 = 一圈扇贝状的深色锯齿。
+         现在对每个块都补"别的体"的表面（颜色=那个体自己的），不透明：
+           · 块可见 → 与那个体的表面完全重合，看不出来；
+           · 块隐藏 → 正好把洞的壁补成材料色，读起来是实心切口。
+         自己的体仍然跳过（那是被挖掉的那层皮，补上就"没隐藏"了）。 */
+      var capOp = 1;
       for(var bp=0; bp<psC.length; bp++){
         if(c.ownerPart === bp) continue;                 // 本块几何就是它，不用再补
         if(!(c.parts && c.parts[bp])) continue;          // 本块不涉及这个部件
-        mkBodyCap(capGeoOf("p", bp, c.parts[bp].keep), colF);
+        /* v33.72（用户："青色模型异常变黄，转视角那块黄色还跟着动" / "蓝色阴影仍在"）：
+           原来这里用 **本块的正面色 colF** 画别人的表面 ——
+           部件块（青）去补模型的表面 → 模型被刷成青（=图 c 那片"蓝色阴影"）、
+           模型块（橙）去补部件的表面 → 部件被刷成橙（=图 a 那块"黄色"）。
+           两个表面只差 0.06mm，深度胜负随视角变化 → 那块颜色还会"跟着转"。
+           现在一律用**被补的那个体自己的颜色**：颜色和它自己的表面完全一致，
+           正常显示时根本看不出来（只是把共面补上一层），
+           只有那个体的块被隐藏时这层才"露出来"充当实心切口。 */
+        mkBodyCap(capGeoOf("p", bp, c.parts[bp].keep),
+                  partTint ? 0x12d6c8 : 0x8fd8ff, capOp, "p" + bp);
       }
       for(var bm=0; bm<msC.length; bm++){
         if(c.ownerPe === msC[bm]) continue;
         var spB = cmSpecs && cmSpecs[bm];
         if(!spB) continue;
-        mkBodyCap(capGeoOf("m", bm, spB.keep), colF);
+        mkBodyCap(capGeoOf("m", bm, spB.keep), 0xe7974b, capOp, "m" + bm);
       }
     }
   });
@@ -3628,8 +3664,11 @@ var CYL_GLSL = [
 "    float ck = uCmKeep[t].x;",
 "    if(abs(ck) > 0.5){",
 "      float sd = cmMaskSD(t, vCylW);",
-"      if(ck > 0.0){ if(sd < -0.6) discard; }",
-"      else        { if(sd >  0.6) discard; }",
+"      /* uCmKeep[t].y = 1 → 贴面模式：不留 0.6 格余量（封盖这种正好躺在交界面上",
+"         的平面必须硬边界，否则会从交界那一侧探出半格，在模型轮廓上留下一条虚线）。 */",
+"      float eps = (uCmKeep[t].y > 0.5) ? 0.0 : 0.6;",
+"      if(ck > 0.0){ if(sd < -eps) discard; }",
+"      else        { if(sd >  eps) discard; }",
 "    }",
 "  }",
 "}"
@@ -3667,7 +3706,7 @@ function cylUniformsOf(mat){
       "#include <clipping_planes_fragment>",
       "#include <clipping_planes_fragment>\n  cylDiscard();");
   };
-  mat.customProgramCacheKey = function(){ return "cylclip8"; };   // v33.70：partInside 加余量（针孔麻点）
+  mat.customProgramCacheKey = function(){ return "cylclip9"; };   // v33.72：uCmKeep.y=贴面模式（封盖硬边界）
   mat.needsUpdate = true;
   return u;
 }
@@ -3729,7 +3768,7 @@ function setPartSpecs(mat, specs){
   }
 }
 /* v33.65：把本块的体素裁剪规格写进材质。槽号 = activeCustomBodies() 下标。 */
-function setCmSpecs(mat, specs, tex){
+function setCmSpecs(mat, specs, tex, tight){
   var u = cylUniformsOf(mat);
   u.uCmMask.value = tex || null;
   u.uCmAtlas.value.set(CM_ATLAS_W, CM_ATLAS_H, CM_GRID_N, CM_COLS);
@@ -3739,7 +3778,7 @@ function setCmSpecs(mat, specs, tex){
       u.uCmPos.value[i].set(s.pos.x, s.pos.y, s.pos.z, 1);
       u.uCmLo.value[i].set(s.lo[0], s.lo[1], s.lo[2], 0);
       u.uCmSz.value[i].set(s.size[0], s.size[1], s.size[2], 0);
-      u.uCmKeep.value[i].set(s.keep, 0, 0, 0);
+      u.uCmKeep.value[i].set(s.keep, tight ? 1 : 0, 0, 0);
     } else {
       u.uCmPos.value[i].set(0,0,0,0);
       u.uCmLo.value[i].set(0,0,0,0);
@@ -8895,7 +8934,11 @@ function cmBodyPoints(pe){
    避免和体自己的表面逐像素打架。（负值 = 往体内缩） */
 function offsetGeoAlongNormals(geo, dist){
   var g = geo.clone();
-  g.computeVertexNormals();
+  /* v33.72：**不要**重算法向。旧代码 clone 之后先 computeVertexNormals() —— 对烘焙出来的
+     三角面汤（非索引几何）来说那是"每个三角面一个法向"，补面会变成平面着色，
+     在体表面后面露出一道道棱（用户看到的"竖向条纹 / 弧形色带"就是它）。
+     法向只用来定偏移方向，原件有就直接用；实在没有才兜底算一次。 */
+  if(!g.attributes.normal) g.computeVertexNormals();
   var pos = g.attributes.position, nor = g.attributes.normal;
   for(var i=0;i<pos.count;i++){
     pos.setXYZ(i,
@@ -8904,7 +8947,6 @@ function offsetGeoAlongNormals(geo, dist){
       pos.getZ(i) + nor.getZ(i)*dist);
   }
   pos.needsUpdate = true;
-  g.computeVertexNormals();
   g.computeBoundingSphere();
   return g;
 }

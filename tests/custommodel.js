@@ -483,12 +483,34 @@ check("交叠处补出了『体表面』封盖（capBody），隐藏一侧后不
   R(`(function(){var n=0;cellGroup.children.forEach(function(m){
     if(m.userData.capBody && m.material && m.material.color) n++;});return n;})()`) >= 1,
   R(`String((function(){var n=0;cellGroup.children.forEach(function(m){if(m.userData.capBody)n++;});return n;})())`));
-check("『体表面』封盖用的是本块的材料色（不是内壁深色）",
-  R(`(function(){var ok=false;cellGroup.children.forEach(function(m){
-    if(m.userData.capBody && m.material && m.material.color){
-      var h=m.material.color.getHexString();
-      if(h==='12d6c8'||h==='8fd8ff'||h==='e7974b'||h==='f08c42') ok=true;
-    }});return ok;})()`) === true);
+/* v33.72（用户："青色模型异常变黄，转视角那块黄还跟着动" / "蓝色阴影仍在"）：
+   补面必须用**被补的那个体自己的颜色**。v33.71 用的是"本块的材料色"，
+   于是部件块（青）去补模型表面 = 模型被刷成青；模型块（橙）去补部件表面 = 部件被刷成橙；
+   两者只差 0.06mm，深度胜负随视角变化 → 那块颜色还会"跟着转"。 */
+const jCap = JSON.parse(R(`(function(){var o=[];cellGroup.children.forEach(function(m){
+  if(m.userData.capBody && m.material && m.material.color)
+    o.push({of:String(m.userData.capBodyOf||""), c:m.material.color.getHexString(), op:m.material.opacity});
+});return JSON.stringify(o);})()`));
+console.log("    capBody:", JSON.stringify(jCap));
+check("补面记录了『补的是哪个体』", jCap.length > 0 && jCap.every(function(x){ return /^[pm]\d+$/.test(x.of); }),
+  JSON.stringify(jCap.map(function(x){ return x.of; })));
+check("补面的颜色 = 那个体自己的颜色（不再互相染色）",
+  jCap.every(function(x){
+    if(x.of.charAt(0) === "m") return x.c === "e7974b";
+    return x.c === "12d6c8" || x.c === "8fd8ff" || x.c === "8fd8ff";
+  }), JSON.stringify(jCap.map(function(x){ return x.of + ":" + x.c; })));
+check("补面是不透明的（隐藏块的洞壁要能挡住内壁）",
+  jCap.every(function(x){ return x.op === 1; }), JSON.stringify(jCap.map(function(x){ return x.op; })));
+/* v33.72：背面（内壁）改成"同色系暗调"，不再是深蓝 0x2f6a8f / 深棕 0x4b2a14 */
+const jBack = JSON.parse(R(`(function(){var o=[];cellGroup.children.forEach(function(m){
+  if(m.userData.front === false && m.userData.ck && m.material && m.material.color)
+    o.push(m.material.color.getHexString());
+});return JSON.stringify(o);})()`));
+console.log("    back colors:", JSON.stringify(jBack));
+check("背面用同色系暗调（不再出现深蓝 2f6a8f / 深棕 4b2a14 / 灰蓝 39485f）",
+  jBack.length > 0 && jBack.every(function(h){
+    return h !== "2f6a8f" && h !== "4b2a14" && h !== "39485f" && h !== "5b3413" && h !== "0a7a72";
+  }), JSON.stringify(jBack));
 /* v33.71：换目标点选必须从 index 0 重新开始（"第一次点没反应、第二次才消失"） */
 R("cells.forEach(function(c){ c.sel=true; }); pickSel={}; buildCellVis();");
 R("_pickCycle.x=-9999; _pickCycle.y=-9999; _pickCycle.first=null;");
