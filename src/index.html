@@ -6491,8 +6491,11 @@ function cellAtPoint(P, surfBodyId){
     }
     if(!ok) continue;
     /* ④ v33.64：自建模型体积裁剪（与 ③ 同一套语义）。
-       点选命中点**正好落在模型表面上**，奇偶判定在表面上的结果不可信，
-       所以命中网格自己所属的那个模型用 surfBodyId 直接认定为"体内"。 */
+       surfBodyId：v33.64 曾用它把"命中网格自己所属的模型"直接认定为体内
+       （表面点上奇偶判定不可信）。v33.66 起 tapPick 改为沿视线往实体里挪一点再判，
+       不再传这个参数 —— 重叠时最近那块网格不一定是看得见的那块，
+       强制"体内"反而会把邻居块判成命中（那正是"点了没反应"的另一个来源）。
+       参数保留给探针/调试用。 */
     for(var nb=0; nb<ms.length && ok; nb++){
       var bb = (c.bodies||{})[ms[nb]._id];
       var keepB = bb ? bb.keep : 1;
@@ -6605,31 +6608,27 @@ function tapPick(e){
          （锥身+锥底），于是"点锥顶却把整块藏了"。
          这里对每个命中点做一次 cellAtPoint，取真正包含它的那一块。 */
       var key = null, hitPt = null;
-      /* v33.64：命中的是**自建模型的分块网格**时，直接认这个网格自己的 key。
-         原因：射线命中的点正好落在自建模型的表面上，而"点在不在模型体内"的奇偶判定
-         在表面上不可信 —— 沿视线微移的那套兜底（resolvePickKey）会把它判成"体外"，
-         于是点到自建模型却隐藏了别处的块（表现为"点了没反应"）。
-         这里只做该块自身的裁剪平面校验，通过就用它。 */
-      for(var hqc=0; hqc<ch.length && key===null; hqc++){
-        var obc = ch[hqc].object, ckc = obc.userData && obc.userData.ck;
-        if(!ckc) continue;
-        var celc = cellOfKey(ckc);
-        if(!celc || !celc.ownerPe) continue;
-        var ptc = ch[hqc].point, okc = true;
-        for(var jc=0; jc<celc.planes.length; jc++){
-          var plc = celc.planes[jc];
-          if(plc.normal.x*ptc.x + plc.normal.y*ptc.y + plc.normal.z*ptc.z + plc.constant < -1e-6){ okc = false; break; }
-        }
-        if(okc){ key = ckc; hitPt = ptc; }
-      }
+      /* v33.66（用户："拼装模型里的部件与自建模型重叠、再加一个面切割时，
+         点选保留割不掉拼装的那个模型"）：
+         v33.64 在这里有一段"命中自建模型的分块网格 → 直接认这个网格自己的 key"的捷径，
+         但它**只校验裁剪平面**，cell 的贯穿体 / 部件 / 自建模型体积约束一概没查。
+         重叠时同一位置有好几块网格（part 块、part∩model 块、model 块共用同一份几何），
+         射线最先命中的那块往往被着色器整片丢弃 —— 屏幕上看不见，
+         于是"点可见的青色那一块 → 藏掉了一块看不见的块"，用户看到的就是"点了没反应、
+         面没能把拼装模型割掉"。
+         现在删掉捷径，且**不在命中点上直接判**：命中点一定压在表面上，
+         表面上的边界/奇偶判定本来就不可靠（v33.64 的捷径就是为了躲这个）。
+         改成沿视线往实体里挪一点点再判 —— 屏幕上那一像素真正画的是一片"表面"，
+         表面背后的材料属于哪一块，才是用户想割的那一块。
+         也不再用 surfBodyId 强制"体内"：重叠时最近那块网格不一定就是看得见的那块，
+         强制只会把邻居块判成命中（本轮实测就栽在这里）。 */
+      var probeIn = [0.25, 0.8, 2.0];
       for(var hq=0; hq<ch.length && key===null; hq++){
-        var hp0 = ch[hq].point;
-        /* v33.64：命中点压在自建模型表面上时，把"它属于哪个模型"告诉 cellAtPoint，
-           否则表面上的奇偶判定不可信，会把它判到"体外那块"去。 */
-        var ck0 = ch[hq].object.userData && ch[hq].object.userData.ck;
-        var cel0 = ck0 ? cellOfKey(ck0) : null;
-        var cellHit = cellAtPoint(hp0, cel0 && cel0.ownerPe ? cel0.ownerPe._id : null);
-        if(cellHit){ key = cellHit.key; hitPt = hp0; }
+        var hp0 = ch[hq].point, rd0 = raycaster.ray.direction;
+        for(var si0=0; si0<probeIn.length && key===null; si0++){
+          var cellHit = cellAtPoint(hp0.clone().addScaledVector(rd0, probeIn[si0]));
+          if(cellHit){ key = cellHit.key; hitPt = hp0; }
+        }
       }
       if(key === null){
         /* 兜底 1：原有 resolvePickKey（沿视线微移找 key） */

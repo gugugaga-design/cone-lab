@@ -414,6 +414,52 @@ R(`(function(){for(var i=customModels.length-1;i>=0;i--){
   cmPersist(); cmRenderHome(); cmRenderChips();
   parts.length=0; faces.length=0; applyShape('cyl');})()`);
 
+section("J 重叠时点选必须落在「看得见的那一块」上（v33.66）");
+/* 用户报：拼装部件与自建模型重叠 + 加面切割，点选保留时青色的拼装部件割不掉。
+   根因：tapPick 里 v33.64 的捷径"命中自建模型的分块网格 → 直接认这个网格自己的 key"
+   只校验了裁剪平面，没校验部件的体积约束。重叠时同一位置有好几块网格共用同一份几何，
+   射线最先命中的那块整片被着色器丢弃（看不见），于是点一下藏掉的是"看不见的块"
+   → 用户看到的就是"点了没反应 / 面没把拼装模型割掉"。
+   现在命中点一律交给 cellAtPoint（全套体积判定 + 沿视线微移兜底）。 */
+R("applyShape('cone'); parts.length=0; cyls.length=0; faces.length=0; addPart('frustum');");
+R("parts[0].r=20;parts[0].rt=14;parts[0].h=40;parts[0].x=0;parts[0].y=0;parts[0].z=0;buildParts();");
+const jData = R("JSON.stringify(cmGeomData(cmBakeTriangles()))");
+const jRec = JSON.parse(R("JSON.stringify(cmSaveGeometry(" + jData + ",'perm','重叠点选','cone'))"));
+R("cmPlace('" + jRec.id + "',[0,0,0])");
+R("faces=[{type:'horiz',ang:0,x:0,y:0,z:0,on:true,flip:false}]; mode='pick'; refresh();");
+R("if(cellsDirty){rebuildCells();buildCellVis();cellsDirty=false;}");
+const jFace = R("activeFaceData()[0].id");
+const jAbove = "f" + jFace + ":1|";
+check("重叠处同时有「部件内+模型外」和「部件内+模型内」两套块",
+  R(`cells.some(function(c){return /p\\d+:3\\|m\\d+:0/.test(c.key)&&c.key.indexOf('${jAbove}')===0;})`) === true &&
+  R(`cells.some(function(c){return /p\\d+:3\\|m\\d+:1/.test(c.key)&&c.key.indexOf('${jAbove}')===0;})`) === true);
+/* 部件侧面、平面上方、且在模型外面的一点（y=10 处圆台半径≈15.5，圆锥半径≈11.25） */
+const jKey = R("(function(){var c=cellAtPoint(new THREE.Vector3(0,10,13));return c?c.key:'null';})()");
+check("取到的是「部件内 + 模型外」那块（看得见的青色）",
+  jKey !== "null" && jKey.indexOf(jAbove) === 0 && /p\d+:3\|m\d+:0/.test(jKey), jKey);
+R("camera.position.set(110,90,170); controls.target.set(0,0,0); camera.lookAt(0,0,0); camera.updateMatrixWorld(true);");
+const jScreen = JSON.parse(R(`(function(){
+  var v=new THREE.Vector3(0,10,13).project(activeCam), r=renderer.domElement.getBoundingClientRect();
+  return JSON.stringify([r.left+(v.x*0.5+0.5)*r.width, r.top+(-v.y*0.5+0.5)*r.height]);
+})()`));
+tapAt(jScreen[0], jScreen[1]);
+const jHidden = R("JSON.stringify(Object.keys(pickSel).filter(function(k){return pickSel[k]===false;}))");
+check("点可见的青色部分 → 藏掉的正是这块（不是被着色器丢弃的那块）",
+  JSON.parse(jHidden).indexOf(jKey) >= 0 && !/p\d+:3\|m\d+:1/.test(jHidden), jHidden);
+check("藏掉之后该块进入幽灵层（还能点回来）",
+  R(`(function(){var n=0;cellGroup.children.forEach(function(m){
+    if(m.userData.front && m.userData.ck==='${jKey}' && m.material.opacity<0.1)n++;});return n;})()`) >= 1);
+/* 原地再点一下（先把"连点轮换"指针挪开，免得切到"整个部件"那个粒度）→ 恢复 */
+R("_pickCycle.x=-9999; _pickCycle.y=-9999;");
+tapAt(jScreen[0], jScreen[1]);
+check("原地再点一下能恢复", R("cells.every(function(c){return c.sel!==false;})") === true);
+/* 清场 */
+R(`(function(){for(var i=customModels.length-1;i>=0;i--){
+    if(customModels[i].id==='${jRec.id}'){ customModels.splice(i,1); break; }
+  }
+  cmPersist(); cmRenderHome(); cmRenderChips();
+  parts.length=0; faces.length=0; pickSel={}; applyShape('cyl');})()`);
+
 section("E 建模台成品也进同一个库");
 const html = fs.readFileSync(path.join(__dirname, "../src/index.html"), "utf8");
 const inlines = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(function (m) { return m[1]; });
