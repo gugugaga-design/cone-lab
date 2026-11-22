@@ -236,7 +236,6 @@ function makeDocument(){
   var cmOv = reg(new FakeEl("div"), "cmOverlay"); cmOv.hidden = true; body.appendChild(cmOv);
   reg(new FakeEl("button"), "cmBack"); cmOv.appendChild(byId.cmBack);
   reg(new FakeEl("div"), "cmTitle"); cmOv.appendChild(byId.cmTitle);
-  reg(new FakeEl("div"), "cmInfo"); cmOv.appendChild(byId.cmInfo);
   var cmTabs = new FakeEl("div"); cmTabs.id = "cmTabs"; cmOv.appendChild(cmTabs);
   reg(new FakeEl("button"), "cmClearPlaced"); cmTabs.appendChild(byId.cmClearPlaced);
   reg(new FakeEl("button"), "cmCloseTop"); cmTabs.appendChild(byId.cmCloseTop);
@@ -253,6 +252,28 @@ function makeDocument(){
   reg(new FakeEl("input"), "cmRenameInput"); cmRen.appendChild(byId.cmRenameInput);
   reg(new FakeEl("button"), "cmRenameOk"); cmRen.appendChild(byId.cmRenameOk);
   reg(new FakeEl("button"), "cmRenameCancel"); cmRen.appendChild(byId.cmRenameCancel);
+
+  /* v33.77 设置与文件管理控件。 */
+  var cmDel=reg(new FakeEl("div"),"cmDeleteDlg"); cmDel.hidden=true; body.appendChild(cmDel);
+  ["cmDeleteInfo","cmDeleteOk","cmDeleteCancel"].forEach(function(id){
+    cmDel.appendChild(reg(new FakeEl(id==="cmDeleteInfo" ? "p" : "button"),id));
+  });
+  var cmModelCard=reg(new FakeEl("div"),"cmModelCard"); cmModelCard.classList.add("cm-card"); cmOv.appendChild(cmModelCard);
+  cmModelCard.appendChild(reg(new FakeEl("div"),"cmInfo"));
+  cmModelCard.appendChild(reg(new FakeEl("button"),"cmToggleModels"));
+  var cmDataStat=reg(new FakeEl("div"),"cmDataStat"); cmOv.appendChild(cmDataStat);
+  cmOv.appendChild(reg(new FakeEl("button"),"cmClearRecords"));
+  cmOv.appendChild(reg(new FakeEl("button"),"cmFocusModels"));
+  cmOv.appendChild(reg(new FakeEl("span"),"cmRecCount"));
+  cmOv.appendChild(reg(new FakeEl("div"),"cmRecords"));
+  cmOv.appendChild(reg(new FakeEl("p"),"cmTransferStatus"));
+  ["cmImportModels","cmExportAll","btnSettings","homeSettings"].forEach(function(id){body.appendChild(reg(new FakeEl("button"),id));});
+  cmOv.appendChild(reg(new FakeEl("input"),"cmImportFile"));
+  var tabbar=reg(new FakeEl("div"),"tabbar"); tabbar.hidden=true; body.appendChild(tabbar);
+  ["experiment","settings"].forEach(function(name){
+    var tab=reg(new FakeEl("button"),"tab-"+name);
+    tab.classList.add("tab"); tab.setAttribute("data-tab",name); tabbar.appendChild(tab);
+  });
 
   var doc = {
     _byId: byId,

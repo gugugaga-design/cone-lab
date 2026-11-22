@@ -56,7 +56,7 @@
   #home{ position:fixed; inset:0; z-index:50; background:
       radial-gradient(120% 80% at 50% 0%, #1b2740 0%, #0e1420 60%, #0b101a 100%);
     display:flex; flex-direction:column; padding:calc(18px + env(safe-area-inset-top,0px)) 16px
-      calc(18px + env(safe-area-inset-bottom,0px)); overflow-y:auto; -webkit-overflow-scrolling:touch; }
+      calc(86px + env(safe-area-inset-bottom,0px)); overflow-y:auto; -webkit-overflow-scrolling:touch; }
   #home[hidden]{ display:none; }
   #home .h-title{ font-size:20px; font-weight:700; letter-spacing:.5px; }
   #home .h-sub{ font-size:12px; color:var(--sub); margin-top:6px; }
@@ -75,6 +75,19 @@
   .card .c-desc{ font-size:12px; color:var(--sub); margin-top:4px; line-height:1.35; display:block; }
   .card .go{ flex:0 0 auto; color:var(--sub); font-size:20px; }
   #home .h-foot{ margin-top:auto; padding-top:18px; font-size:11px; color:var(--sub); opacity:.75; }
+  /* ===== 底部标签栏：实验 / 设置（与参考版一致，设置在右下角） ===== */
+  #tabbar{ position:fixed; left:0; right:0; bottom:0; z-index:115; display:flex; gap:8px;
+    padding:10px 14px calc(9px + env(safe-area-inset-bottom,0px));
+    background:#0b101a; border-top:1px solid rgba(120,160,220,.14);
+    box-shadow:0 -8px 24px rgba(0,0,0,.38); }
+  #tabbar[hidden]{ display:none; }
+  #tabbar .tab{ flex:1 1 0; height:42px; border-radius:12px; border:1px solid transparent;
+    background:transparent; color:var(--sub); font-size:13px; display:flex; align-items:center;
+    justify-content:center; gap:7px; transition:background .15s, border-color .15s; }
+  #tabbar .tab svg{ width:16px; height:16px; }
+  #tabbar .tab.on{ background:linear-gradient(135deg,#22324d,#182335); border-color:#3a5580;
+    color:#dce9ff; font-weight:600; box-shadow:0 2px 10px rgba(0,0,0,.35); }
+  #tabbar .tab:active{ border-color:var(--acc); }
 
   #panel{ flex:0 0 auto; background:var(--panel); border-top:1px solid var(--line);
     max-height:46%; display:flex; flex-direction:column; min-height:0; overflow:hidden;
@@ -201,20 +214,22 @@
     border-radius:12px; padding:10px 12px; color:var(--tx); font-size:13px; }
   .cm-global:active{ border-color:var(--acc); }
   .cm-global .cm-badge{ margin-left:auto; font-size:11px; color:#ffd9b0; }
-  #cmOverlay{ position:fixed; inset:0; z-index:70; background:var(--bg);
-    display:flex; flex-direction:column; padding:calc(12px + env(safe-area-inset-top,0px)) 14px
-      calc(12px + env(safe-area-inset-bottom,0px)); }
+  #cmOverlay{ position:fixed; inset:0; z-index:100; background:
+      radial-gradient(120% 80% at 50% 0%, #1b2740 0%, #0e1420 60%, #0b101a 100%);
+    display:flex; flex-direction:column; padding:calc(14px + env(safe-area-inset-top,0px)) 14px
+      calc(78px + env(safe-area-inset-bottom,0px)); }
   #cmOverlay[hidden]{ display:none; }
-  #cmTop{ display:flex; align-items:center; gap:10px; }
-  #cmTop button{ height:34px; padding:0 12px; border-radius:9px; border:1px solid var(--line);
+  #cmTop{ display:flex; align-items:center; gap:10px; padding:2px 2px 12px; }
+  #cmTop .sp-title b{ font-size:22px; letter-spacing:.5px; }
+  #cmTop button{ height:36px; padding:0 12px; border-radius:9px; border:1px solid var(--line);
     background:var(--panel2); color:var(--tx); font-size:13px; white-space:nowrap; }
-  #cmTop .sp-title b{ font-size:16px; }
-  #cmTabs{ display:flex; gap:8px; margin:14px 0 10px; }
+  #cmTop .cm-x{ margin-left:auto; width:36px; padding:0; font-size:20px; line-height:1;
+    color:#cfd9e8; }
+  #cmTabs{ display:flex; gap:8px; margin:10px 0; }
   #cmTabs button{ height:32px; padding:0 14px; border-radius:9px; border:1px solid var(--line);
     background:var(--panel2); color:var(--sub); font-size:12px; }
   #cmTabs button.on{ border-color:#ffb066; color:#ffd9b0; background:rgba(70,40,18,.9); }
-  #cmList{ flex:1 1 auto; min-height:0; overflow-y:auto; -webkit-overflow-scrolling:touch;
-    display:flex; flex-direction:column; gap:10px; }
+  #cmList{ min-height:0; display:flex; flex-direction:column; gap:10px; }
   .cm-item{ background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:10px 12px; }
   .cm-ihead{ display:flex; align-items:center; gap:8px; }
   .cm-ihead b{ font-size:14px; flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -225,10 +240,49 @@
   .cm-irow button{ height:30px; padding:0 14px; border-radius:8px; border:1px solid var(--line);
     background:var(--panel2); color:var(--tx); font-size:12px; }
   .cm-irow button[data-act=place]{ background:var(--acc); border-color:var(--acc); color:#06131f; font-weight:600; }
-  .cm-empty{ padding:36px 10px; text-align:center; color:var(--sub); font-size:13px; line-height:1.8; }
-  #cmSaveDlg, #cmRenameDlg{ position:fixed; inset:0; z-index:80; background:rgba(6,10,18,.78);
+  .cm-empty{ padding:30px 10px; text-align:center; color:var(--sub); font-size:12px; line-height:1.8; }
+  #cmSettingsBody{ flex:1; min-height:0; overflow-y:auto; -webkit-overflow-scrolling:touch; padding-bottom:6px; }
+  #cmSettingsBody h3{ font-size:15px; margin:16px 0 8px; }
+  #cmTabs, .cm-irow{ flex-wrap:wrap; }
+  #cmList{ overflow:visible; flex:none; }
+  #cmTransferStatus:empty{ display:none; }
+  /* 设置页分区卡片（参考增强版：数据存储 / 自建模型 / 创建记录） */
+  .cm-setcard{ background:rgba(23,33,50,.72); border:1px solid var(--line); border-radius:14px;
+    padding:12px; margin-bottom:12px; }
+  .cm-setcard-hd{ display:flex; align-items:center; gap:8px; font-size:13px; font-weight:600;
+    color:#c9d6e8; margin-bottom:8px; }
+  .cm-setcard-hd .cm-count{ font-weight:400; color:var(--sub); font-size:12px; }
+  .cm-stat{ font-size:13px; color:#e6eefb; }
+  .cm-stat b{ font-size:16px; }
+  .cm-btnrow{ display:flex; gap:8px; margin-top:10px; flex-wrap:wrap; }
+  .cm-btnrow button{ flex:1 1 0; min-width:68px; height:36px; border-radius:10px;
+    border:1px solid var(--line); background:var(--panel2); color:var(--tx); font-size:12px; }
+  .cm-btnrow button:active{ border-color:var(--acc); }
+  .cm-btnrow button.danger{ border-color:#7a3a3a; color:#ffb3b3; background:rgba(90,30,30,.35); }
+  #cmModelCard.collapsed #cmList, #cmModelCard.collapsed #cmTabs{ display:none; }
+  #cmModelCard.collapsed .cm-idesc{ margin-bottom:0; }
+  /* 创建记录列表 */
+  #cmRecords{ display:flex; flex-direction:column; gap:8px; }
+  .rec-row{ background:var(--panel2); border:1px solid var(--line); border-radius:11px; overflow:hidden; }
+  .rec-hd{ display:flex; align-items:center; gap:8px; padding:10px 11px; }
+  .rec-time{ font-size:12px; color:#cfdaea; flex:0 0 auto; }
+  .rec-badge{ font-size:11px; color:#9ec7ff; border:1px solid #33547f; border-radius:7px;
+    padding:1px 7px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:36%; }
+  .rec-counts{ margin-left:auto; font-size:11px; color:var(--sub); white-space:nowrap; }
+  .rec-ar{ color:var(--sub); font-size:16px; transition:transform .15s; }
+  .rec-row.open .rec-ar{ transform:rotate(90deg); }
+  .rec-body{ padding:0 11px 10px; border-top:1px dashed rgba(120,160,220,.16); }
+  .rec-body[hidden]{ display:none; }
+  .rec-line{ font-size:11px; color:#b9c8dd; line-height:1.7; margin-top:6px; }
+  .rec-ops{ font-size:11px; color:var(--sub); margin-top:8px; line-height:1.6; }
+  .rec-btns{ display:flex; gap:8px; margin-top:9px; }
+  .rec-btns button{ flex:1 1 0; height:30px; border-radius:8px; border:1px solid var(--line);
+    background:var(--panel); color:var(--tx); font-size:12px; }
+  .rec-btns button.primary{ border-color:#3a5580; color:#dce9ff; background:rgba(43,70,110,.5); }
+  .rec-btns button.rec-del{ border-color:#7a3a3a; color:#ffb3b3; }
+  #cmSaveDlg, #cmRenameDlg, #cmDeleteDlg{ position:fixed; inset:0; z-index:120; background:rgba(6,10,18,.78);
     display:flex; align-items:center; justify-content:center; padding:24px; }
-  #cmSaveDlg[hidden], #cmRenameDlg[hidden]{ display:none; }
+  #cmSaveDlg[hidden], #cmRenameDlg[hidden], #cmDeleteDlg[hidden]{ display:none; }
   .cm-dlg{ width:100%; max-width:340px; background:var(--panel); border:1px solid var(--line);
     border-radius:16px; padding:16px; box-shadow:0 12px 40px rgba(0,0,0,.5); }
   .cm-dlg h3{ margin:0 0 10px; font-size:16px; }
@@ -413,9 +467,7 @@
   <div class="ph-title" style="padding:14px 12px 2px">特殊演示
     <span style="font-size:11px;color:var(--sub);font-weight:400">· 独立 3D 模型（可持续增加）</span></div>
   <div id="spCards"></div>
-  <div class="ph-title" style="padding:10px 12px 0">自建模型
-    <span style="font-size:11px;color:var(--sub);font-weight:400">· 保存处理后的剩余实体</span></div>
-  <div id="cmHomeCards"></div>
+  <div id="cmHomeCards" hidden></div>
 </div>
 <div id="stage">
   <canvas id="gl"></canvas>
@@ -427,6 +479,7 @@
     <button id="btnArrows">法向<br>箭头</button>
     <button id="btnQuads">隐藏<br>面片</button>
     <button id="btnHome">功能<br>列表</button>
+    <button id="btnSettings">设置</button>
   </div>
   <div id="views">
     <button data-v="front">主视</button>
@@ -570,16 +623,55 @@
   <div id="spLoading" hidden><div class="sp-spin"></div><span>正在进行布尔运算、生成实体…</span></div>
 </div>
 
-<div id="cmOverlay" hidden>
+<div id="cmOverlay" hidden role="dialog" aria-modal="true" aria-labelledby="cmTitle">
   <div id="cmTop">
-    <button id="cmBack">‹ 返回</button>
-    <div class="sp-title"><b id="cmTitle">自建模型 · 管理</b><small id="cmInfo">各功能卡通用：可放置、改名、删除</small></div>
+    <div class="sp-title"><b id="cmTitle">设置</b></div>
+    <button id="cmCloseTop" class="cm-x" aria-label="关闭设置" title="关闭">×</button>
   </div>
-  <div id="cmTabs">
-    <button id="cmClearPlaced">收回已放置</button>
-    <button id="cmCloseTop" style="margin-left:auto">关闭</button>
+  <div id="cmSettingsBody">
+    <div class="cm-setcard">
+      <div class="cm-setcard-hd">数据存储</div>
+      <div class="cm-stat" id="cmDataStat">记录 <b>0</b> 条 · 0 B</div>
+      <div class="cm-btnrow">
+        <button id="cmExportAll">导出 JSON</button>
+        <button id="cmImportBtn">导入</button>
+        <button id="cmClearRecords" class="danger">清空</button>
+        <button id="cmFocusModels">自建模型</button>
+      </div>
+      <input id="cmImportFile" type="file" accept=".json,application/json" multiple hidden>
+      <p id="cmTransferStatus" class="cm-idesc" role="status" aria-live="polite"></p>
+    </div>
+    <div class="cm-setcard" id="cmModelCard">
+      <div class="cm-setcard-hd">自建模型</div>
+      <p class="cm-idesc" id="cmInfo">各单元共用模型库。进入单元，在「相贯体 → 自建模型」中点名字放置。</p>
+      <div id="cmTabs">
+        <button id="cmClearPlaced">收回已放置</button>
+        <button id="cmToggleModels">收起</button>
+      </div>
+      <div id="cmList"></div>
+    </div>
+    <div class="cm-setcard">
+      <div class="cm-setcard-hd">创建记录 <span id="cmRecCount" class="cm-count"></span></div>
+      <div id="cmRecords"><p class="cm-idesc">暂无创建记录。</p></div>
+    </div>
   </div>
-  <div id="cmList"></div>
+</div>
+
+<div id="tabbar" hidden role="tablist" aria-label="页面切换">
+  <button class="tab" data-tab="experiment" role="tab" aria-selected="false">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M9 3h6M10 3v6.2L4.9 18a2 2 0 0 0 1.7 3h10.8a2 2 0 0 0 1.7-3L14 9.2V3"/>
+      <path d="M7.2 15h9.6"/>
+    </svg>
+    <span>实验</span>
+  </button>
+  <button class="tab" data-tab="settings" role="tab" aria-selected="false">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M4 7h9M17 7h3M4 17h3M11 17h9"/>
+      <circle cx="15" cy="7" r="2.2"/><circle cx="9" cy="17" r="2.2"/>
+    </svg>
+    <span>设置</span>
+  </button>
 </div>
 
 <div id="cmSaveDlg" hidden>
@@ -595,9 +687,20 @@
   </div>
 </div>
 
-<div id="cmRenameDlg" hidden>
+<div id="cmDeleteDlg" hidden role="dialog" aria-modal="true" aria-labelledby="cmDeleteTitle">
   <div class="cm-dlg">
-    <h3>给模型改名</h3>
+    <h3 id="cmDeleteTitle">删除自建模型</h3>
+    <p id="cmDeleteInfo"></p>
+    <div class="cm-drow">
+      <button id="cmDeleteCancel">取消</button>
+      <button id="cmDeleteOk">确认删除</button>
+    </div>
+  </div>
+</div>
+
+<div id="cmRenameDlg" hidden role="dialog" aria-modal="true" aria-labelledby="cmRenameTitle">
+  <div class="cm-dlg">
+    <h3 id="cmRenameTitle">给模型改名</h3>
     <p>名字会显示在每一张功能卡的「相贯体 → 自建模型」里。</p>
     <input id="cmRenameInput" maxlength="24" placeholder="模型名字">
     <div class="cm-drow">
@@ -1190,6 +1293,8 @@ resize();
 
 (function loop(){
   requestAnimationFrame(loop);
+  var homePage=document.getElementById("home"), settingsPage=document.getElementById("cmOverlay");
+  if(window.__spActive || (homePage && !homePage.hidden) || (settingsPage && !settingsPage.hidden)) return;
   controls.update();
   if(cellsDirty && mode==="pick"){ rebuildCells(); buildCellVis(); }
   cellsDirty = false;
@@ -5624,6 +5729,7 @@ function renderPartList(){
       });
     });
   });
+  commitUndo();
 }
 
 /* ============ 相贯示例卡片：圆柱与圆柱 / 圆柱与长方体 ============
@@ -7397,21 +7503,25 @@ document.getElementById("btnReset").addEventListener("click", function(){ resetV
 document.getElementById("btnZoomIn").addEventListener("click", function(){ zoomBy(0.78); });
 document.getElementById("btnZoomOut").addEventListener("click", function(){ zoomBy(1.28); });
 document.getElementById("btnHome").addEventListener("click", function(){
+  if(pendingCyl || pendingPart || pendingCustom || cylDrag || partDrag || customDrag || drag) endDrag();
   showHome(true);
   var db = document.getElementById("demoBar"); if(db) db.hidden = true;
 });
 Array.prototype.forEach.call(document.querySelectorAll("#cards .card, #demoCards .card"), function(card){
   card.addEventListener("click", function(){
+    if(!recFinish()) return;
     var dk = card.getAttribute("data-demo");
     if(dk){
       document.getElementById("demoBar").hidden = false;
       showDemo(dk, 0);
+      recStart((card.querySelector(".c-name") || card).textContent);
       return;
     }
     document.getElementById("demoBar").hidden = true;
     clearDemo();
     applyShape(card.getAttribute("data-shape"));
     showHome(false);
+    recStart((card.querySelector(".c-name") || card).textContent);
   });
 });
 document.getElementById("btnFlip").addEventListener("click", function(){
@@ -7860,7 +7970,9 @@ function snapState(){
     faces: faces.map(function(f){ return {type:f.type, ang:f.ang, x:f.x, y:f.y, z:f.z, on:f.on, flip:f.flip, _id:f._id}; }),
     cyls: cyls.map(function(c){ return {shape:c.shape, type:c.type, ang:c.ang, x:c.x, y:c.y, z:c.z,
       r:c.r, w:c.w, h:c.h, rt:c.rt, len:c.len, depth:c.depth||0, on:c.on, hole:c.hole, open:c.open, _id:c._id}; }),
-    parts: parts.map(function(p){ var o = {}; for(var k in p) o[k] = p[k]; return o; }),
+    parts: parts.map(function(p){ return recFields(p, "k type ang x y z on open locked hidden _id r h w d a rt"); }),
+    placed: (placedCustom || []).map(function(p){ return recFields(p, "id x y z _id"); }),
+    mode: mode,
     pickSel: pickSel
   });
 }
@@ -7875,6 +7987,7 @@ function commitUndo(){
   if(undoRestoring || !undoStack) return;
   var s;
   try{ s = snapState(); }catch(_){ return; }
+  recPush(s);
   if(s === lastSnap) return;          // 状态没变就不压栈（避免撤销时"原地踏步"）
   lastSnap = s;
   undoStack.push(s);
@@ -7892,14 +8005,27 @@ function applySnapshot(json){
     faces = s.faces || [];
     cyls = s.cyls || [];
     parts = s.parts || [];
+    faces.concat(cyls,parts).forEach(function(p){ if(typeof p._id === "number") _idSeq=Math.max(_idSeq,p._id); });
+    cmClearPlaced();
+    var missing = 0;
+    (s.placed || []).forEach(function(p){
+      var i = cmPlace(p.id, [p.x, p.y, p.z]);
+      if(i < 0){ missing++; return; }
+      if(p._id != null){ placedCustom[i]._id = p._id; _cmBodySeq = Math.max(_cmBodySeq, p._id); }
+    });
     pickSel = s.pickSel || {};
+    mode = s.mode === "pick" ? "pick" : "all";
+    document.getElementById("mode").value = mode;
+    if(pickRowEl) pickRowEl.hidden = mode !== "pick";
     renderList(); renderCylList(); renderPartList();
     refresh();
   } finally {
     undoRestoring = false;
   }
   lastSnap = snapState();
+  recPush(lastSnap);
   updateUndoBtn();
+  if(missing) cmToast("有 " + missing + " 个自建模型已不在模型库，其他参数已恢复", 3600);
 }
 function undoStep(){
   if(undoStack.length < 2){ snapTipText("没有可撤销的操作", 1400); return false; }
@@ -7965,8 +8091,250 @@ function refresh(){
 
 /* ============ 功能卡片：切换立体 ============ */
 function showHome(on){
+  if(on && !recFinish()) return false;
   document.getElementById("home").hidden = !on;
+  syncTabbar();
+  return true;
 }
+/* 底部标签栏：实验页显示「实验」高亮，设置页显示「设置」高亮；单元内不显示。 */
+function cmActivePage(){
+  var s=document.getElementById("cmOverlay"), h=document.getElementById("home");
+  if(s && !s.hidden) return "settings";
+  if(h && !h.hidden) return "experiment";
+  return "";
+}
+function syncTabbar(){
+  var bar=document.getElementById("tabbar"); if(!bar) return;
+  var page=cmActivePage();
+  bar.hidden=!page;
+  Array.prototype.forEach.call(bar.querySelectorAll(".tab"),function(b){
+    var on=b.getAttribute("data-tab")===page;
+    b.classList.toggle("on",on); b.setAttribute("aria-selected",on?"true":"false");
+  });
+}
+function cmShowTab(name){
+  if(name==="settings"){ cmOpenOverlay(cmOwner); syncTabbar(); return true; }
+  cmCloseOverlay();
+  var ok=showHome(true)!==false;
+  syncTabbar();
+  return ok;
+}
+/* 创建记录独立存储；写回时不解析历史快照，只有列表和恢复才读取历史参数。 */
+var RECORD_KEY = "coneLab.creationRecords.v1", RECORD_MAX = 50, RECORD_BYTES = 1024*1024;
+var recSession = null, recTimer = 0, recBusy = false, recLast = "", recTarget = "cmRecords";
+function recFields(src, names){
+  var out = {};
+  names.split(" ").forEach(function(k){
+    var v = src && src[k];
+    if(typeof v === "string") out[k] = v.slice(0,160);
+    else if(typeof v === "boolean" || (typeof v === "number" && isFinite(v))) out[k] = v;
+  });
+  return out;
+}
+function recParams(src, depth){
+  if(depth > 16) return null;
+  if(src == null || typeof src === "boolean") return src;
+  if(typeof src === "number") return isFinite(src) ? src : 0;
+  if(typeof src === "string") return src.slice(0,160);
+  if(Array.isArray(src)) return src.slice(0,4096).map(function(v){ return recParams(v,depth+1); });
+  var out = {}, keys = "id kind def closed pl pts planes entities features seq planeId origin u v n name tag type color t bool ids snap regions p start end dir angle ax ac x y z x0 x1 y0 y1 ay bx by cx cy rx ry r rot size len w h d a b cfg depth cbD cbDepth csAngle radius seg chain anchor merge seed area holes".split(" ");
+  keys.forEach(function(k){ if(Object.prototype.hasOwnProperty.call(src,k)) out[k] = recParams(src[k],depth+1); });
+  return out;
+}
+function recCleanSnap(s){
+  s = s || {};
+  if(s.kind === "cad") return {kind:"cad",data:recParams(s.data || {},0)};
+  if(s.kind === "special") return {kind:"special",data:recFields(s.data,"id cut view")};
+  var out = recFields(s,"shape flipped mode");
+  out.faces = (Array.isArray(s.faces)?s.faces:[]).slice(0,64).map(function(f){ return recFields(f,"type ang x y z on flip _id"); });
+  out.cyls = (Array.isArray(s.cyls)?s.cyls:[]).slice(0,64).map(function(c){ return recFields(c,"shape type ang x y z r w h rt len depth on hole open _id"); });
+  out.parts = (Array.isArray(s.parts)?s.parts:[]).slice(0,64).map(function(p){ return recFields(p,"k type ang x y z on open locked hidden _id r h w d a rt"); });
+  out.placed = (Array.isArray(s.placed)?s.placed:[]).slice(0,256).map(function(p){ return recFields(p,"id x y z _id"); });
+  out.pickSel = {};
+  Object.keys(s.pickSel || {}).slice(0,4096).forEach(function(k){
+    if(k !== "__proto__" && k !== "constructor" && k !== "prototype" && typeof s.pickSel[k] === "boolean") out.pickSel[k] = s.pickSel[k];
+  });
+  return out;
+}
+function recCapture(){
+  if(!recSession) return null;
+  if(recSession.kind === "cad") return {kind:"cad",data:window.CADLab.recordState()};
+  if(recSession.kind === "special") return {kind:"special",data:window.SpecialDemos.recordState()};
+  return JSON.parse(snapState());
+}
+function recRawItems(){
+  var raw = localStorage.getItem(RECORD_KEY) || "[]", out = [], start = -1, depth = 0, quoted = false, escaped = false;
+  if(raw.charAt(0) !== "[" || raw.charAt(raw.length-1) !== "]") return out;
+  for(var i=1;i<raw.length-1;i++){
+    var c = raw.charAt(i);
+    if(quoted){ if(escaped) escaped=false; else if(c === "\\") escaped=true; else if(c === '"') quoted=false; continue; }
+    if(c === '"'){ quoted=true; continue; }
+    if(c === "{"){ if(!depth) start=i; depth++; }
+    else if(c === "}"){ depth--; if(!depth && start>=0){ out.push(raw.slice(start,i+1)); start=-1; } }
+  }
+  return depth || quoted ? [] : out;
+}
+function recRawId(raw){
+  var m = /^\{"id":("(?:\\.|[^"\\])*")/.exec(raw);
+  try{ return m ? JSON.parse(m[1]) : ""; }catch(_){ return ""; }
+}
+function recLoad(){
+  try{
+    return recRawItems().map(function(raw){
+      var r=JSON.parse(raw), out=recFields(r,"id title kind createdAt updatedAt");
+      out.snap=recCleanSnap(r.snap); return out;
+    }).filter(function(r){ return r.id && r.snap; }).slice(0,RECORD_MAX);
+  }catch(_){ cmToast("创建记录读取失败，请检查本地存储",3200); return []; }
+}
+function recCounts(s){
+  if(s.kind === "cad"){
+    var d=s.data || {}, fs=d.features || [];
+    return {f:(d.planes || []).length,c:fs.filter(function(f){ return f.t === "hole"; }).length,p:fs.length};
+  }
+  return {f:(s.faces || []).length,c:(s.cyls || []).length,p:(s.parts || []).length+(s.placed || []).length};
+}
+function recPush(snap){
+  if(!recSession || recBusy) return;
+  if(typeof snap === "string"){
+    if(recSession.kind !== "scene") return;
+    snap=JSON.parse(snap);
+  }else snap=snap || recCapture();
+  if(!snap) return;
+  var clean=recCleanSnap(snap), signature=JSON.stringify(clean);
+  if(signature === recLast) return;
+  recLast=signature; recSession.snap=clean; recSession.updatedAt=Date.now();
+  if(!recTimer) recTimer=setTimeout(function(){ recTimer=0; recFlush(); },300);
+}
+function recFlush(){
+  clearTimeout(recTimer); recTimer=0;
+  if(!recSession) return true;
+  try{
+    recPush(); clearTimeout(recTimer); recTimer=0;
+    var current=JSON.stringify(recSession), items=recRawItems().filter(function(raw){ return recRawId(raw) !== recSession.id; });
+    items.unshift(current); items=items.slice(0,RECORD_MAX);
+    var raw="["+items.join(",")+"]";
+    while(raw.length*2 > RECORD_BYTES && items.length>1){ items.pop(); raw="["+items.join(",")+"]"; }
+    if(raw.length*2 > RECORD_BYTES) throw new Error("单条记录超过 1 MB");
+    localStorage.setItem(RECORD_KEY,raw);
+    return true;
+  }catch(e){ cmToast("创建记录保存失败："+(e && e.message || "存储空间不足"),3600); return false; }
+}
+function recFinish(){
+  if(recBusy || !recSession) return true;
+  if(!recFlush()) return false;
+  recSession=null; recLast=""; return true;
+}
+function recStart(title, options){
+  if(recBusy) return true;
+  options=options || {};
+  if(!recFinish()) return false;
+  var now=Date.now();
+  recSession={id:"r"+now.toString(36)+Math.random().toString(36).slice(2,8),
+    title:String(title || (SHAPES[shape] && SHAPES[shape].label) || shape).slice(0,160),
+    kind:options.kind === "cad" || options.kind === "special" ? options.kind : "scene",createdAt:now,updatedAt:now,snap:null};
+  recLast=""; recPush(options.snap); return recSession.id;
+}
+function recEscape(s){ return String(s).replace(/[&<>"']/g,function(c){ return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]; }); }
+function recFmtTime(t){
+  var d=new Date(t || Date.now()), p=function(x){ return (x<10?"0":"")+x; };
+  return (d.getMonth()+1)+"-"+p(d.getDate())+" "+p(d.getHours())+":"+p(d.getMinutes());
+}
+function cmByteText(n){ return n<1024 ? n+" B" : (n/1024).toFixed(1)+" KB"; }
+/* 数据存储卡片：记录条数与占用；模型数量写在模型区说明里。 */
+function cmUpdateDataStat(){
+  var raw="", n=0;
+  try{ raw=localStorage.getItem(RECORD_KEY)||""; n=recRawItems().length; }catch(e){ }
+  var stat=document.getElementById("cmDataStat");
+  if(stat) stat.innerHTML="记录 <b>"+n+"</b> 条 · "+cmByteText(raw.length);
+  var count=document.getElementById("cmRecCount");
+  if(count) count.textContent=n ? "（"+n+"）" : "";
+  var info=document.getElementById("cmInfo");
+  if(info) info.textContent="全部单元通用（参数化草图建模台除外）· 进入单元后在「相贯体 → 自建模型」点名字放置，共 "+
+    customModels.length+" 个";
+}
+function recRender(containerId){
+  recTarget=containerId || "cmRecords";
+  var el=document.getElementById(recTarget); if(!el) return [];
+  if(!recFlush()) return [];
+  var records=recLoad();
+  el.innerHTML=records.length ? records.map(function(r){
+    var n=recCounts(r.snap), kind=r.snap.kind;
+    return '<div class="rec-row" data-rec-id="'+recEscape(r.id)+'">'+
+      '<div class="rec-hd" role="button" tabindex="0">'+
+        '<span class="rec-time">'+recEscape(recFmtTime(r.updatedAt||r.createdAt))+'</span>'+
+        '<span class="rec-badge">'+recEscape(r.title)+'</span>'+
+        '<span class="rec-counts">'+n.f+' 面 · '+n.c+' 贯体 · '+n.p+' 部件</span>'+
+        '<span class="rec-ar">›</span></div>'+
+      '<div class="rec-body" hidden>'+
+        '<div class="rec-line">创建于 '+recEscape(new Date(r.createdAt||r.updatedAt).toLocaleString("zh-CN"))+'</div>'+
+        '<div class="rec-line">类型：'+recEscape(kind==="cad"?"参数化草图建模台":kind==="special"?"特殊演示":"截面实验室")+'</div>'+
+        '<div class="rec-btns"><button type="button" class="primary" data-rec="'+recEscape(r.id)+
+        '" data-rec-act="restore">恢复这个状态</button><button type="button" class="rec-del" data-rec="'+
+        recEscape(r.id)+'" data-rec-act="delete">删除</button></div></div></div>';
+  }).join("") : '<div class="cm-empty">还没有创建记录。<br>进入任意单元、改动模型后，这里会自动记录创作内容。</div>';
+  el.onclick=function(e){
+    var head=e.target.closest && e.target.closest(".rec-hd");
+    if(head && el.contains(head)){
+      var row=head.parentNode, body=row.querySelector ? row.querySelector(".rec-body") : null;
+      var open=!row.classList.contains("open");
+      row.classList.toggle("open",open); if(body) body.hidden=!open; return;
+    }
+    var b=e.target.closest && e.target.closest("button[data-rec]"); if(!b || !el.contains(b)) return;
+    if(b.getAttribute("data-rec-act") === "restore") recRestore(b.getAttribute("data-rec"));
+    else{
+      try{
+        var id=b.getAttribute("data-rec"), items=recRawItems().filter(function(raw){ return recRawId(raw)!==id; });
+        localStorage.setItem(RECORD_KEY,"["+items.join(",")+"]");
+        if(recSession && recSession.id===id){ clearTimeout(recTimer); recTimer=0; recSession=null; recLast=""; }
+        recRender(recTarget);
+      }catch(_){ cmToast("删除记录失败，请检查本地存储",3200); }
+    }
+  };
+  cmUpdateDataStat();
+  return records;
+}
+function recRestore(id){
+  if(window.CADLab && window.CADLab.isOpen() && window.CADLab.close()===false) return false;
+  if(!recFinish()) return false;
+  var r=recLoad().filter(function(item){ return item.id===id; })[0]; if(!r) return false;
+  recBusy=true;
+  try{
+    if(window.CADLab && window.CADLab.isOpen() && window.CADLab.close()===false) return false;
+    if(window.SpecialDemos && window.SpecialDemos.isOpen()) window.SpecialDemos.close();
+    if(r.snap.kind === "cad") window.CADLab.restoreRecord(r.snap.data);
+    else if(r.snap.kind === "special") window.SpecialDemos.restoreRecord(r.snap.data);
+    else{
+      if(!SHAPES[r.snap.shape]) throw new Error("记录中的功能不存在");
+      clearDemo(); applyShape(r.snap.shape); applySnapshot(JSON.stringify(r.snap));
+      undoStack=[snapState()]; lastSnap=undoStack[0]; updateUndoBtn(); showHome(false);
+      var db=document.getElementById("demoBar"); if(db) db.hidden=true;
+    }
+    var settings=document.getElementById("cmOverlay"); if(settings) settings.hidden=true;
+    recSession=r; recLast=JSON.stringify(r.snap); syncTabbar();
+    cmToast("已恢复「"+r.title+"」",2400); return true;
+  }catch(e){ cmToast("记录恢复失败："+(e && e.message || "参数无效"),3600); return false; }
+  finally{ recBusy=false; }
+}
+/* 安卓系统返回键与页面返回使用同一流程。 */
+window.ConeLabBack=function(){
+  var rename=document.getElementById("cmRenameDlg"), del=document.getElementById("cmDeleteDlg"), save=document.getElementById("cmSaveDlg");
+  if(rename && !rename.hidden){ cmCloseRename(); return true; }
+  if(del && !del.hidden){ cmCloseDelete(); return true; }
+  if(save && !save.hidden){ cmCloseDlg(); return true; }
+  var settings=document.getElementById("cmOverlay");
+  if(settings && !settings.hidden){ cmCloseOverlay(); return true; }
+  if(window.CADLab && window.CADLab.isOpen()){ window.CADLab.close(); return true; }
+  if(window.SpecialDemos && window.SpecialDemos.isOpen()){ window.SpecialDemos.close(); return true; }
+  var home=document.getElementById("home");
+  if(home && home.hidden){ showHome(true); return true; }
+  return false;
+};
+window.ConeLabRecords={list:function(){ recFlush(); return recLoad(); },render:recRender,start:recStart,flush:recFlush,restore:recRestore,
+  update:function(){ recPush(); },finish:recFinish};
+window.addEventListener("pagehide",function(){
+  if(window.CADLab && window.CADLab.isOpen()) window.CADLab.autoSave();
+  recFlush();
+});
 /* 切换立体：重建几何体 + 重置面与剖分，避免上一功能的残留状态 */
 /* 只换"立体几何"，不动面/贯穿体/部件（撤销时用） */
 function setShapeGeom(name){
@@ -8030,14 +8398,32 @@ var _cmDlgGeo = null, _cmDlgOwner = "cone", _cmRenameId = null;
 
 function cmToast(msg, ms){ try{ snapTipText(msg, ms || 2400); }catch(e){ } }
 function cmR3(v){ return Math.round(v*100)/100; }   // 0.01mm 精度，存手机时体积减半
+/* 持久化只保留模型数据；距离场、空间索引等运行缓存不能进入存盘。 */
+function cmStorageRecord(r){
+  return {id:r.id,name:r.name,owner:r.owner,scope:r.scope,ts:r.ts,tris:r.tris,
+    autoKey:r.autoKey || undefined, geo:{p:r.geo.p,n:r.geo.n,c:r.geo.c}};
+}
 function cmLoad(){
   customModels = [];
   try{
     var raw = (window.localStorage && localStorage.getItem(CUSTOM_KEY)) || "";
     var arr = raw ? JSON.parse(raw) : [];
-    if(arr && arr.length) arr.forEach(function(r){
-      if(r && r.scope === "perm" && r.geo && r.geo.p && r.geo.p.length >= 9) customModels.push(r);
+    var needsMigration = Array.isArray(arr) && arr.some(function(r){
+      return r && Object.keys(r).some(function(k){ return k.charAt(0)==="_"; });
     });
+    if(arr && arr.length) arr.forEach(function(r){
+      if(r && r.scope === "perm" && r.geo && Array.isArray(r.geo.p) &&
+         r.geo.p.length >= 9 && r.geo.p.length % 9 === 0 && r.geo.p.length <= CUSTOM_MAX_TRIS*9 &&
+         r.geo.p.every(function(v){ return typeof v === "number" && isFinite(v); })) {
+        var clean=cmStorageRecord(r);
+        clean.id=String(r.id||("cmLegacy"+customModels.length));
+        clean.name=String(r.name||"自建模型").slice(0,24);
+        clean.tris=r.geo.p.length/9;
+        customModels.push(clean);
+      }
+    });
+    /* 旧版误写入的距离场只迁移一次，保留全部有效模型。 */
+    if(needsMigration) cmPersist();
   }catch(e){ }
   cmRenderHome();
   cmRenderChips();
@@ -8045,7 +8431,7 @@ function cmLoad(){
 function cmPersist(){
   try{
     if(!window.localStorage) return false;
-    localStorage.setItem(CUSTOM_KEY, JSON.stringify(customModels.filter(function(r){ return r.scope === "perm"; })));
+    localStorage.setItem(CUSTOM_KEY, JSON.stringify(customModels.filter(function(r){ return r.scope === "perm"; }).map(cmStorageRecord)));
     return true;
   }catch(e){
     cmToast("永久保存失败：手机存储空间不足，请删掉一些旧模型", 3600);
@@ -9210,6 +9596,7 @@ function cmPlace(id, pos){
   var fitted=false;
   try{ fitted=cmEnsureVisible(idx); }catch(e){ }
   cmRenderChips();
+  if(!undoRestoring) commitUndo();
   /* v33.64：点选模式下放进来，要立刻参与分块，否则"放了但点不动" */
   cmCellsDirty();
   cmToast("已放置「"+rec.name+"」"+(fitted?"（视角已自动拉远）":"")+
@@ -9248,6 +9635,7 @@ function cmDropPlaced(idx){
   pendingCustom = null; customDrag = null;
   cmCellsDirty();
   cmRenderChips(); cmRenderList();
+  if(!undoRestoring) commitUndo();
   var nm = pe.label ? pe.label.replace(/^自建·/, "") : "模型";
   cmToast("已收回「" + nm + "」" + (placedCustom.length ? ("，还剩 " + placedCustom.length + " 个") : ""), 2400);
   return true;
@@ -9265,6 +9653,7 @@ function cmClearPlaced(){
   pendingCustom=null; customDrag=null;
   cmCellsDirty();
   cmRenderChips();
+  if(!undoRestoring) commitUndo();
 }
 /* 来源标签：库是全局的，"来源"只是告诉用户这个模型是在哪张卡里做出来的 */
 function cmSourceLabel(owner){
@@ -9333,28 +9722,10 @@ function cmRenderChips(){
   }
 }
 function cmRenderHome(){
-  /* v33.62：不再在每张功能卡下面挂子卡片（那是"每卡一份库"的误解），
-     改到卡内的「相贯体 → 自建模型」；首页只留一个总的库列表，方便查看/进卡放置。 */
   var old=document.querySelectorAll ? document.querySelectorAll(".cm-card") : [];
   Array.prototype.forEach.call(old,function(el){ if(el.parentNode) el.parentNode.removeChild(el); });
-  var box=document.getElementById("cmHomeCards");
-  if(box){
-    box.innerHTML="";
-    if(!customModels.length){
-      var empty=document.createElement("div");
-      empty.className="cm-empty";
-      empty.textContent="还没有保存的模型。进入任意功能卡，把处理后的实体「存为自建」即可。";
-      box.appendChild(empty);
-    } else {
-      customModels.slice().reverse().forEach(function(r){
-        var b=document.createElement("button"); b.className="cm-global";
-        b.innerHTML='<span>🧩 '+escapeHtmlSafe(r.name)+'</span><span class="cm-badge">'+
-                    (r.scope==="perm"?"永久 · ":"临时 · ")+r.tris+' 面 ›</span>';
-        b.addEventListener("click",function(){ cmOpenOverlay(r.owner); });
-        box.appendChild(b);
-      });
-    }
-  }
+  var count=document.getElementById("cmHomeCount");
+  if(count) count.textContent=customModels.length+" 个模型 ›";
   cmRenderChips();
 }
 function escapeHtmlSafe(s){
@@ -9365,17 +9736,163 @@ function escapeHtmlSafe(s){
 function cmOpenOverlay(owner){
   cmOwner=owner||cmOwner;
   var ov=document.getElementById("cmOverlay"); if(ov) ov.hidden=false;
+  var card=document.getElementById("cmModelCard"); if(card) card.classList.remove("collapsed");
+  var toggle=document.getElementById("cmToggleModels"); if(toggle) toggle.textContent="收起";
   cmRenderList();
+  if(window.ConeLabRecords && typeof window.ConeLabRecords.render==="function") window.ConeLabRecords.render();
+  cmUpdateDataStat(); cmResetClearBtn(); syncTabbar();
 }
 function cmCloseOverlay(){
+  cmCloseRename(); cmCloseDelete(); cmResetClearBtn();
   var ov=document.getElementById("cmOverlay"); if(ov) ov.hidden=true;
+  syncTabbar();
+}
+var _cmDeleteId=null, _cmTransferBusy=false, _cmImportSeq=0;
+var CM_JSON_MAX_BYTES=8*1024*1024, CM_JSON_MAX_MODELS=100, CM_JSON_MAX_TOTAL_TRIS=60000;
+function cmTransferStatus(message){
+  var status=document.getElementById("cmTransferStatus");
+  if(status) status.textContent=message;
+}
+function cmResetClearBtn(){
+  var button=document.getElementById("cmClearRecords");
+  if(button){ button.dataset.confirm="0"; button.textContent="清空"; }
+}
+function cmClearRecords(){
+  try{ localStorage.removeItem(RECORD_KEY); }catch(e){ }
+  clearTimeout(recTimer); recTimer=0; recSession=null; recLast="";
+  recRender(); cmTransferStatus("创建记录已清空。"); cmToast("创建记录已清空",2000);
+}
+function cmOpenDelete(id){
+  var rec=customModels.filter(function(r){ return r.id===id; })[0];
+  if(!rec) return;
+  _cmDeleteId=id;
+  document.getElementById("cmDeleteInfo").textContent="确认删除「"+rec.name+"」？此操作也会收回场景中的该模型，删除后无法撤销。";
+  document.getElementById("cmDeleteDlg").hidden=false;
+  document.getElementById("cmDeleteCancel").focus();
+}
+function cmCloseDelete(){
+  var dlg=document.getElementById("cmDeleteDlg"); if(dlg) dlg.hidden=true;
+  _cmDeleteId=null;
+}
+function cmExportJSON(id){
+  var records=id==null ? customModels.slice() : customModels.filter(function(r){ return r.id===id; });
+  if(!records.length) throw new Error("没有可导出的模型");
+  var clean=records.map(function(r){
+    return {id:r.id,name:r.name,owner:r.owner,scope:r.scope,ts:r.ts,tris:r.tris,
+      geo:{p:Array.prototype.slice.call(r.geo.p),n:Array.prototype.slice.call(r.geo.n||[]),
+        c:Array.prototype.slice.call(r.geo.c||[0,0,0])}};
+  });
+  return JSON.stringify({format:"ConeLabCustom",version:1,models:clean});
+}
+function cmDownloadJSON(id){
+  try{
+    var content=cmExportJSON(id), filename=id==null ? "conelab-models.json" : "conelab-model.json";
+    if(window.ConeLabFiles && typeof window.ConeLabFiles.saveJson==="function"){
+      if(window.ConeLabFiles.saveJson(filename,content)===false) throw new Error("无法启动文件保存");
+      cmTransferStatus("已提交导出，请在系统文件选择器中完成保存。");
+      return;
+    }
+    var url=URL.createObjectURL(new Blob([content],{type:"application/json;charset=utf-8"}));
+    var link=document.createElement("a"); link.href=url; link.download=filename;
+    document.body.appendChild(link); link.click(); document.body.removeChild(link);
+    setTimeout(function(){ URL.revokeObjectURL(url); },1000);
+    cmTransferStatus("已导出 "+(id==null ? customModels.length+" 个模型" : "该模型")+"。");
+  }catch(e){ cmTransferStatus("导出失败："+e.message); }
+}
+function cmParseImport(input){
+  var data=input;
+  if(typeof input==="string"){
+    if(input.length>CM_JSON_MAX_BYTES || new Blob([input]).size>CM_JSON_MAX_BYTES) throw new Error("JSON 超过 8 MB 限制");
+    try{ data=JSON.parse(input.replace(/^\uFEFF/,"")); }catch(e){ throw new Error("JSON 格式无效"); }
+  }
+  var records;
+  if(Array.isArray(data)) records=data;
+  else if(data && typeof data==="object" && Object.prototype.hasOwnProperty.call(data,"models")){
+    if(data.format!==undefined && data.format!=="ConeLabCustom") throw new Error("模型文件格式不支持");
+    if(data.version!==undefined && data.version!==1) throw new Error("模型文件版本不支持");
+    records=data.models;
+  }else records=[data];
+  if(!Array.isArray(records) || !records.length || records.length>CM_JSON_MAX_MODELS) throw new Error("每批须包含 1 至 100 个模型");
+  var total=0;
+  function numbers(value,length,label){
+    if(!Array.isArray(value) || value.length!==length) throw new Error(label+"数组长度不正确");
+    for(var i=0;i<value.length;i++) if(typeof value[i]!=="number" || !Number.isFinite(value[i]) || Math.abs(value[i])>1000000) throw new Error(label+"须为有限数字且绝对值不超过 1000000");
+    return value.slice();
+  }
+  var clean=records.map(function(r,index){
+    var prefix="第 "+(index+1)+" 个模型：";
+    if(!r || typeof r!=="object" || Array.isArray(r) || !r.geo || typeof r.geo!=="object") throw new Error(prefix+"缺少几何数据");
+    if(typeof r.name!=="string" || !r.name.trim() || r.name.length>24 || /[\u0000-\u001f\u007f]/.test(r.name)) throw new Error(prefix+"名字须为 1 至 24 个有效字符");
+    var p=r.geo.p;
+    if(!Array.isArray(p) || p.length<9 || p.length%9!==0 || p.length>CUSTOM_MAX_TRIS*9) throw new Error(prefix+"三角面数组长度无效或超过 12000 面");
+    var tris=p.length/9;
+    if(!Number.isInteger(r.tris) || r.tris!==tris) throw new Error(prefix+"面数与顶点数组不一致");
+    if(r.geo.t!==undefined && r.geo.t!==tris) throw new Error(prefix+"几何面数不一致");
+    total+=tris;
+    if(total>CM_JSON_MAX_TOTAL_TRIS) throw new Error("每批最多导入 60000 个三角面");
+    if(r.scope!==undefined && r.scope!=="temp" && r.scope!=="perm") throw new Error(prefix+"保存类型无效");
+    if(r.owner!==undefined && (typeof r.owner!=="string" || r.owner.length>80)) throw new Error(prefix+"来源无效");
+    if(r.ts!==undefined && (!Number.isInteger(r.ts) || r.ts<0 || r.ts>8640000000000000)) throw new Error(prefix+"创建时间无效");
+    var pos=numbers(p,p.length,prefix+"顶点");
+    var normal=numbers(r.geo.n,p.length,prefix+"法向");
+    var center=numbers(r.geo.c,3,prefix+"中心");
+    return {name:r.name.trim(),owner:r.owner||"cone",scope:r.scope==="temp"?"temp":"perm",
+      ts:r.ts===undefined?Date.now():r.ts,tris:tris,geo:{p:pos,n:normal,c:center}};
+  });
+  if(new Blob([JSON.stringify(clean)]).size>CM_JSON_MAX_BYTES) throw new Error("模型数据超过 8 MB 限制");
+  return clean;
+}
+function cmImportJSON(input){
+  var records=cmParseImport(input), added=[];
+  records.forEach(function(r){
+    var id;
+    do{ id="cm"+Date.now()+"_import_"+(++_cmImportSeq); }
+    while(customModels.some(function(old){ return old.id===id; }));
+    r.id=id; customModels.push(r); added.push(id);
+  });
+  var persisted=cmPersist();
+  if(!persisted){
+    records.forEach(function(r){ r.scope="temp"; });
+    cmPersist();
+  }
+  cmRenderHome(); cmRenderChips(); cmRenderList();
+  cmTransferStatus("已导入 "+records.length+" 个模型"+(persisted?"。":"，存储空间不足，本页暂时可用，请导出备份。"));
+  return added;
+}
+function cmReadImportFiles(fileList){
+  if(_cmTransferBusy) return;
+  var files=Array.prototype.slice.call(fileList||[]), size=0;
+  if(!files.length) return;
+  try{
+    if(files.length>CM_JSON_MAX_MODELS) throw new Error("每批最多选择 100 个文件");
+    files.forEach(function(file){ size+=file.size; });
+    if(size>CM_JSON_MAX_BYTES) throw new Error("所选文件总大小超过 8 MB");
+  }catch(e){ cmTransferStatus("导入失败："+e.message); return; }
+  _cmTransferBusy=true;
+  cmTransferStatus("正在读取并校验模型…");
+  var tasks=files.map(function(file){
+    return new Promise(function(resolve,reject){
+      var reader=new FileReader();
+      reader.onerror=function(){ reject(new Error("无法读取文件："+file.name)); };
+      reader.onabort=function(){ reject(new Error("文件读取已取消")); };
+      reader.onload=function(){ try{ resolve(cmParseImport(String(reader.result))); }catch(e){ reject(e); } };
+      reader.readAsText(file,"UTF-8");
+    });
+  });
+  Promise.all(tasks).then(function(groups){
+    var records=[]; groups.forEach(function(group){ records=records.concat(group); });
+    cmImportJSON(records);
+  }).catch(function(e){ cmTransferStatus("导入失败："+e.message); }).then(function(){
+    _cmTransferBusy=false;
+    var input=document.getElementById("cmImportFile"); if(input) input.value="";
+  });
 }
 function cmRenderList(){
   var box=document.getElementById("cmList"); if(!box) return;
   box.innerHTML="";
   var list=customModels.slice().reverse();
   var info=document.getElementById("cmInfo");
-  if(info) info.textContent="全部功能卡通用（参数化草图建模台除外）· 点「放置」进入场景拖动，共 "+
+  if(info) info.textContent="全部单元通用（参数化草图建模台除外）· 进入单元后在「相贯体 → 自建模型」点名字放置，共 "+
     customModels.length+" 个";
   /* v33.64：把"当前场景里放着的实例"单独列在最上面，可以逐个收回 */
   if(placedCustom.length){
@@ -9409,10 +9926,10 @@ function cmRenderList(){
       (r.scope==="perm"?"perm":"")+'">'+(r.scope==="perm"?"永久保存":"暂时保存")+'</span></div>'+
       '<div class="cm-idesc">来源：'+escapeHtmlSafe(cmSourceLabel(r.owner))+
       (n?(' · 已放置 '+n+' 个'):'')+
-      ' · '+(r.tris||0)+' 个三角面 · '+new Date(r.ts||Date.now()).toLocaleString()+'</div>'+
-      '<div class="cm-irow"><button data-act="place" data-id="'+r.id+'">放置</button>'+
-      '<button data-act="rename" data-id="'+r.id+'">改名</button>'+
-      '<button data-act="delete" data-id="'+r.id+'">删除</button></div>';
+      ' · '+(r.tris||0)+' 个三角面 · 创建于 '+escapeHtmlSafe(new Date(r.ts==null?Date.now():r.ts).toLocaleString())+'</div>'+
+      '<div class="cm-irow"><button data-act="rename" data-id="'+escapeHtmlSafe(r.id)+'">改名</button>'+
+      '<button data-act="export" data-id="'+escapeHtmlSafe(r.id)+'">导出 JSON</button>'+
+      '<button data-act="delete" data-id="'+escapeHtmlSafe(r.id)+'">删除</button></div>';
     box.appendChild(it);
   });
 }
@@ -9465,6 +9982,60 @@ function cmRemove(id){
   cmPersist(); cmRenderHome(); cmRenderChips(); cmRenderList();
 }
 function cmInitUI(){
+  ["cmHomeSettings","btnSettings"].forEach(function(id){
+    var button=document.getElementById(id);
+    if(button) button.addEventListener("click",function(){ cmOpenOverlay(cmOwner); });
+  });
+  /* 底部标签栏：实验 / 设置 */
+  var tabbar=document.getElementById("tabbar");
+  if(tabbar) tabbar.addEventListener("click",function(e){
+    var tab=e.target;
+    while(tab && tab!==tabbar && !(tab.getAttribute && tab.getAttribute("data-tab"))) tab=tab.parentNode;
+    if(tab && tab!==tabbar) cmShowTab(tab.getAttribute("data-tab"));
+  });
+  var clearRecords=document.getElementById("cmClearRecords");
+  if(clearRecords) clearRecords.addEventListener("click",function(){
+    if(clearRecords.dataset.confirm!=="1"){
+      clearRecords.dataset.confirm="1"; clearRecords.textContent="确认清空？";
+      setTimeout(function(){
+        if(clearRecords.dataset.confirm==="1"){ clearRecords.dataset.confirm="0"; clearRecords.textContent="清空"; }
+      },2800);
+      return;
+    }
+    clearRecords.dataset.confirm="0"; clearRecords.textContent="清空"; cmClearRecords();
+  });
+  var focusModels=document.getElementById("cmFocusModels");
+  if(focusModels) focusModels.addEventListener("click",function(){
+    var card=document.getElementById("cmModelCard"); if(!card) return;
+    card.classList.remove("collapsed");
+    var toggle=document.getElementById("cmToggleModels"); if(toggle) toggle.textContent="收起";
+    if(card.scrollIntoView) try{ card.scrollIntoView({behavior:"smooth",block:"start"}); }catch(_){ }
+  });
+  var toggleModels=document.getElementById("cmToggleModels");
+  if(toggleModels) toggleModels.addEventListener("click",function(){
+    var card=document.getElementById("cmModelCard"); if(!card) return;
+    var collapsed=card.classList.toggle("collapsed");
+    toggleModels.textContent=collapsed ? "展开" : "收起";
+  });
+  var importButton=document.getElementById("cmImportBtn"), importFile=document.getElementById("cmImportFile");
+  if(importButton && importFile) importButton.addEventListener("click",function(){
+    if(!_cmTransferBusy){ importFile.value=""; importFile.click(); }
+  });
+  if(importFile) importFile.addEventListener("change",function(){ cmReadImportFiles(importFile.files); });
+  var exportAll=document.getElementById("cmExportAll");
+  if(exportAll) exportAll.addEventListener("click",function(){ cmDownloadJSON(); });
+  var deleteCancel=document.getElementById("cmDeleteCancel"), deleteOk=document.getElementById("cmDeleteOk");
+  if(deleteCancel) deleteCancel.addEventListener("click",cmCloseDelete);
+  if(deleteOk) deleteOk.addEventListener("click",function(){
+    var id=_cmDeleteId; cmCloseDelete();
+    if(id!==null){ cmRemove(id); cmTransferStatus("模型已删除。"); }
+  });
+  document.addEventListener("keydown",function(event){
+    if(event.key!=="Escape") return;
+    if(_cmDeleteId!==null) cmCloseDelete();
+    else if(_cmRenameId!==null) cmCloseRename();
+    else cmCloseOverlay();
+  });
   var save=document.getElementById("btnSaveCustom");
   if(save) save.addEventListener("click",function(){
     var data=cmGeomData(cmBakeTriangles());
@@ -9499,7 +10070,7 @@ function cmInitUI(){
   if(list) list.addEventListener("click",function(e){
     var t=e.target, b=null;
     while(t && t!==list){
-      if(t.tagName==="button" && t.getAttribute("data-act")){ b=t; break; }
+      if(t.tagName && t.tagName.toUpperCase()==="BUTTON" && t.getAttribute("data-act")){ b=t; break; }
       t=t.parentNode;
     }
     if(!b) return;
@@ -9513,23 +10084,37 @@ function cmInitUI(){
     }
     var rec=null; customModels.forEach(function(r){ if(r.id===id) rec=r; });
     if(!rec) return;
-    if(act==="place"){
-      cmCloseOverlay();
-      /* 库是全局的：模型从哪张卡存的都能在这里放；
-         建模台（cad）存的不属于任何卡 → 放进"圆锥"卡（也可换成任意卡） */
-      var target = SHAPES[rec.owner] ? rec.owner : (shape || "cone");
-      if(target!==shape) applyShape(target);
-      showHome(false);
-      cmPlace(id);
-    } else if(act==="rename"){
+    if(act==="rename"){
       cmOpenRename(id);
+    } else if(act==="export"){
+      cmDownloadJSON(id);
     } else if(act==="delete"){
-      if(b.dataset.confirm==="1"){ cmRemove(id); }
-      else { b.dataset.confirm="1"; b.textContent="确认删除？"; setTimeout(function(){ if(b.parentNode) { b.dataset.confirm="0"; b.textContent="删除"; } },3000); }
+      cmOpenDelete(id);
     }
   });
   var clr=document.getElementById("cmClearPlaced");
   if(clr) clr.addEventListener("click",function(){ cmClearPlaced(); cmToast("已收回放置的自建模型"); });
+}
+/* 自动保存按会话键更新，持久化失败则回滚内存记录，关闭方可以保留编辑现场。 */
+function cmAutoSave(data, key, owner){
+  if(!data || !data.t || !Array.isArray(data.p) || data.p.length !== data.t*9 || data.t > CUSTOM_MAX_TRIS ||
+     !data.p.every(function(v){ return typeof v === "number" && isFinite(v); })){
+    cmToast("自动保存失败：当前实体数据为空或超过模型面数上限",3600); return null;
+  }
+  if(!key){ cmToast("自动保存失败：缺少会话标识",3600); return null; }
+  var idx=-1;
+  customModels.forEach(function(r,i){ if(r.autoKey===key) idx=i; });
+  var previous=idx<0 ? null : customModels[idx];
+  var rec={id:previous ? previous.id : "cm"+Date.now()+"_"+Math.random().toString(36).slice(2,7),
+    name:previous ? previous.name : "建模台自动保存 "+new Date().toLocaleString("zh-CN"),
+    owner:owner || "cad",scope:"perm",ts:Date.now(),tris:data.t,autoKey:key,geo:{p:data.p,n:data.n,c:data.c}};
+  if(idx<0) customModels.push(rec); else customModels[idx]=rec;
+  if(!cmPersist()){
+    if(idx<0) customModels.pop(); else customModels[idx]=previous;
+    cmToast("自动保存失败，编辑内容已保留，请释放存储空间后重试返回",4200); return null;
+  }
+  cmRenderHome(); cmRenderChips(); cmRenderList();
+  return rec;
 }
 /* 测试 / 建模台用的公开接口 */
 window.ConeLabCustom = {
@@ -9540,6 +10125,7 @@ window.ConeLabCustom = {
     if(matrix) tris.forEach(function(t){ t.forEach(function(v){ v.p.applyMatrix4(matrix); }); });
     return cmGeomData(tris);
   },
+  autoSave: cmAutoSave,
   save: function(data, scope, name, owner){ return cmSaveGeometry(data,scope,name,owner); },
   saveVisible: function(scope,name){ return cmSaveGeometry(cmGeomData(cmBakeTriangles()),scope,name,cmOwner); },
   list: function(){ return customModels.map(function(r){ return {id:r.id,name:r.name,owner:r.owner,
@@ -9554,6 +10140,12 @@ window.ConeLabCustom = {
   openDlg: cmOpenDlg,
   renderHome: cmRenderHome,
   renderChips: cmRenderChips,
+  openSettings: cmOpenOverlay,
+  closeSettings: cmCloseOverlay,
+  exportJSON: cmExportJSON,
+  importJSON: cmImportJSON,
+  export: cmExportJSON,
+  import: cmImportJSON,
   chips: function(){
     var row=document.getElementById("cmChipRow"), out=[];
     if(row) Array.prototype.forEach.call(row.children,function(ch){
@@ -9572,6 +10164,23 @@ window.ConeLabCustom = {
   state: function(){ return {library:customModels.length,placed:placedCustom.length,
       owner:cmOwner,overlay:!(document.getElementById("cmOverlay")||{}).hidden}; }
 };
+/* 设置页 / 底部标签栏的公开接口（给回归测试与安卓返回键用） */
+window.ConeLabSettings={
+  open: cmOpenOverlay,
+  close: cmCloseOverlay,
+  showTab: cmShowTab,
+  sync: syncTabbar,
+  page: cmActivePage,
+  clearRecords: cmClearRecords,
+  state: function(){
+    var bar=document.getElementById("tabbar");
+    return {page:cmActivePage(), barVisible:!!(bar && !bar.hidden),
+      settingsOpen:!(document.getElementById("cmOverlay")||{}).hidden,
+      activeTab:(function(){ if(!bar || !bar.querySelectorAll) return "";
+        var out=""; Array.prototype.forEach.call(bar.querySelectorAll("[data-tab]"),function(b){
+          if(b.classList.contains("on")) out=b.getAttribute("data-tab"); }); return out; })()};
+  }
+};
 
 // 启动：先建好"圆锥"功能（首页卡片盖在上面），点卡片进入
 applyShape("cone");
@@ -9579,6 +10188,7 @@ cmOwner="cone";
 cmInitUI();
 cmLoad();
 showHome(true);
+syncTabbar();
 })();
 </script>
 <script>
@@ -10774,6 +11384,7 @@ function spResetButtons() {
 }
 
 function spOpen(def) {
+  if(window.ConeLabRecords && !window.ConeLabRecords.finish()) return false;
   if (active) spClose(true);
   curDef = def;
   nameEl.textContent = def.name;
@@ -10782,8 +11393,11 @@ function spOpen(def) {
   ov.hidden = false;
   var home = document.getElementById("home");
   if (home) home.hidden = true;
+  if(window.ConeLabSettings && window.ConeLabSettings.sync) window.ConeLabSettings.sync();
   window.__spActive = true;     // 主渲染循环据此停渲，避免两个 WebGL 上下文同时画
   active = true;
+  spResetButtons();
+  if(window.ConeLabRecords) window.ConeLabRecords.start(def.name,{kind:"special"});
   if (!spEnsureRenderer()) {
     loadEl.hidden = true;
     infoEl.textContent = "当前环境无法创建 WebGL 画布";
@@ -10815,6 +11429,7 @@ function spOpen(def) {
 }
 
 function spClose(keepOverlay) {
+  if(active && window.ConeLabRecords && !window.ConeLabRecords.finish()) return false;
   active = false;
   gen++;                       // 作废尚未执行的异步建模
   cancelAnimationFrame(raf);
@@ -10824,6 +11439,7 @@ function spClose(keepOverlay) {
     ov.hidden = true;
     var home = document.getElementById("home");
     if (home) home.hidden = false;   // 回到功能列表，方便直接选下一个演示
+    if(window.ConeLabSettings && window.ConeLabSettings.sync) window.ConeLabSettings.sync();
   }
 }
 
@@ -10854,6 +11470,7 @@ btnCut.addEventListener("click", function () {
   var on = !btnCut.classList.contains("on");
   btnCut.classList.toggle("on", on);
   spRebuild(on);
+  if(window.ConeLabRecords) window.ConeLabRecords.update();
 });
 btnSpin.addEventListener("click", function () {
   if (!controls) return;
@@ -10866,6 +11483,17 @@ window.addEventListener("resize", function () { if (active) spFit(); });
 /* 暴露一个只读入口，方便以后从别处（如快捷入口）唤起某个演示 */
 window.SpecialDemos = {
   list: DEMOS,
+  recordState: function(){
+    var v=viewsEl.querySelector(".on");
+    return {id:curDef && curDef.id,cut:btnCut.classList.contains("on"),view:v && v.getAttribute("data-v")};
+  },
+  restoreRecord: function(d){
+    var def=DEMOS.filter(function(x){ return x.id===d.id; })[0];
+    if(!def) throw new Error("演示记录不存在");
+    spOpen(def);
+    if(d.cut){ btnCut.classList.add("on"); spRebuild(true); }
+    if(d.view) spSetView(d.view);
+  },
   open: function (id) {
     DEMOS.forEach(function (d) { if (d.id === id) spOpen(d); });
   },
@@ -13814,7 +14442,7 @@ function rebuildFeatures() {
 }
 function markDirty() {
   clearTimeout(S.rebuildTimer);
-  S.rebuildTimer = setTimeout(function () { if (S.active) rebuildFeatures(); }, 60);
+  S.rebuildTimer = setTimeout(function () { S.rebuildTimer=0; if (S.active) rebuildFeatures(); }, 60);
 }
 /* 特征轮廓：选中之优先 —— 刚画完的实体是自动选中的，
    这样「矩形里再画个圆再拉伸」只会拉伸圆（凸台），而不是把外矩形当成带孔板；
@@ -14879,7 +15507,7 @@ function resizeView() {
   /* v33.46：不再在每次 resize 后 fit3D —— 那会把视角拽回模型中心（键盘弹出/面板收起都会触发） */
 }
 function ensure3D() {
-  if (S.r3) return true;
+  if (S.r3) { loop3D(); return true; }
   try {
     S.r3 = new CL_T.WebGLRenderer({ canvas: view, antialias: true, alpha: false });
   } catch (e) { toast("无法创建 3D 画布"); return false; }
@@ -15123,6 +15751,7 @@ function renderInspector() {
 function refreshAll() {
   if (!S.active) return;
   ensure3D(); resizeView(); updateSketch3D(); renderInspector(); syncGridChip();
+  if(window.ConeLabRecords) window.ConeLabRecords.update();
 }
 
 /* --------------------------------------------------------------------------
@@ -15236,6 +15865,8 @@ function syncGridChip() {
   b.textContent = S.grid ? "网格 开" : "网格 关";
 }
 function doClear() {
+  clearTimeout(S.rebuildTimer); S.rebuildTimer=0;
+  cadAutoKey="cad-"+Date.now().toString(36)+Math.random().toString(36).slice(2,8); cadSavedGeometry="";
   S.entities = []; S.features = []; S.solid = null; S.pickedEdge = null; S.pickedEdges = [];
   S.planes = basePlanes(); S.planeId = "front";
   S.history.length = 0; S.future.length = 0;
@@ -15331,12 +15962,36 @@ window.addEventListener("resize", function () {
 /* --------------------------------------------------------------------------
  * 14. 开关 / 对外 API / 首页卡片
  * ------------------------------------------------------------------------ */
+var cadAutoKey = "cad-"+Date.now().toString(36)+Math.random().toString(36).slice(2,8), cadSavedGeometry = "", cadSavedModelId = null;
+function cadRecordState(){
+  return {planes:copyObj(S.planes),entities:S.entities.map(function(e){ return {id:e.id,kind:e.kind,def:copyObj(e.def),pl:e.pl}; }),
+    features:copyObj(S.features),seq:S.seq,planeId:S.planeId};
+}
+function cadAutoSave(){
+  try{
+    if(S.rebuildTimer){ clearTimeout(S.rebuildTimer); S.rebuildTimer=0; rebuildFeatures(); }
+    if(!S.solid || !S.mesh) return true;
+    var api=window.ConeLabCustom;
+    if(!api || !api.autoSave) throw new Error("自动保存接口不可用");
+    S.mesh.updateWorldMatrix(true,false);
+    var data=api.geomData(S.mesh.geometry,S.mesh.matrixWorld);
+    if(!data || !data.t) throw new Error("当前实体没有可保存的面");
+    var signature=JSON.stringify(data);
+    if(signature===cadSavedGeometry && api.list().some(function(r){ return r.id===cadSavedModelId && r.scope==="perm"; })) return true;
+    var saved=api.autoSave(data,cadAutoKey,"cad");
+    if(!saved) return false;
+    cadSavedGeometry=signature; cadSavedModelId=saved.id;
+    toast("成品已自动永久保存"); return true;
+  }catch(e){ toast("自动保存失败："+(e && e.message || "未知错误")+" · 编辑内容已保留"); return false; }
+}
 function open() {
   if (S.active) return;
+  if(window.ConeLabRecords && !window.ConeLabRecords.finish()) return false;
   S.prevActive = !!window.__spActive;
   window.__spActive = true;
   S.active = true; root.hidden = false;
   var home = $("home"); if (home) home.hidden = true;
+  if(window.ConeLabSettings && window.ConeLabSettings.sync) window.ConeLabSettings.sync();
   if (!S.planes.length) S.planes = basePlanes();
   S.planeId = S.planes[0].id;
   setTool("select"); syncInsp();
@@ -15344,19 +15999,42 @@ function open() {
   facePlane();
   refreshAll();
   syncShapeMode();
-  requestAnimationFrame(function () { resizeView(); updateSketch3D(); });
+  if(window.ConeLabRecords) window.ConeLabRecords.start("参数化草图建模台",{kind:"cad"});
+  requestAnimationFrame(function () {
+    if (!S.active) return;
+    resizeView(); updateSketch3D();
+    if (S.r3) { S.r3.clear(); S.r3.render(S.scene3, S.cam3); }
+  });
 }
 function close() {
   if (!S.active) return;
+  if(!cadAutoSave()) return false;
+  if(window.ConeLabRecords && !window.ConeLabRecords.finish()) return false;
+  cancelDraw();
+  S.pointers = {}; S.gest = null; S.drag = null;
+  if (S.ctrl3) S.ctrl3.enabled = true;
   S.active = false; root.hidden = true;
   window.__spActive = S.prevActive;
   cancelAnimationFrame(S.raf3);
   labelsEl.innerHTML = "";
   var home = $("home"); if (home) home.hidden = false;
+  if(window.ConeLabSettings && window.ConeLabSettings.sync) window.ConeLabSettings.sync();
 }
 window.CADLab = {
   open: open,
   close: close,
+  autoSave: cadAutoSave,
+  recordState: cadRecordState,
+  restoreRecord: function(d){
+    clearTimeout(S.rebuildTimer); S.rebuildTimer=0;
+    S.planes=copyObj(d.planes || basePlanes()); if(!S.planes.length) S.planes=basePlanes();
+    S.entities=copyObj(d.entities || []); S.seq=d.seq || 1;
+    S.entities.forEach(function(e){ S.seq=Math.max(S.seq,(parseInt(String(e.id).slice(1),10)||0)+1); resample(e); });
+    S.features=copyObj(d.features || []); S.planeId=d.planeId || S.planes[0].id;
+    S.history=[]; S.future=[]; S.solid=null;
+    cadAutoKey="cad-"+Date.now().toString(36)+Math.random().toString(36).slice(2,8); cadSavedGeometry="";
+    open(); rebuildFeatures(); rebuild3D(); refreshAll();
+  },
   isOpen: function () { return S.active; },
   state: function () {
     return {

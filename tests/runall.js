@@ -59,7 +59,7 @@ SUITES.forEach(function(s){
     module: { exports: {} },
     exports: {},
     setTimeout: setTimeout, clearTimeout: clearTimeout, setInterval: setInterval, clearInterval: clearInterval,
-    Buffer: Buffer, JSON: JSON, Math: Math, Date: Date, Object: Object,
+    Buffer: Buffer, Blob: Blob, JSON: JSON, Math: Math, Date: Date, Object: Object,
     Array: Array, String: String, Number: Number, Error: Error, RegExp: RegExp,
     isFinite: isFinite, parseFloat: parseFloat, parseInt: parseInt,
   };

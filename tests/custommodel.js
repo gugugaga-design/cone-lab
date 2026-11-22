@@ -694,6 +694,84 @@ check("改名同步到卡片行", chips().some(function (c) { return c.name === 
 check("改名写进 localStorage", /我自己的名字/.test(store[KEY] || ""));
 
 
+section("L v33.77 缓存迁移 / 文件往返 / 管理事件 / 重进渲染");
+const cacheApp = boot(), C = code => cacheApp.run(code), cacheStore = {};
+cacheApp.__ctx.Blob = Blob;
+cacheApp.__window.localStorage.getItem = k => cacheStore[k] || null;
+cacheApp.__window.localStorage.setItem = (k,v) => { cacheStore[k] = String(v); };
+cacheApp.__window.localStorage.removeItem = k => { delete cacheStore[k]; };
+C("var cr=cmSaveGeometry(cmGeomData(cmBakeTriangles()),'perm','缓存测试','cone'); cmMaskOf(cr); cmPersist();");
+check("生成距离场后存储仍不含运行缓存", !cacheStore[KEY].includes("_cmMask"));
+const cacheCleanSize = cacheStore[KEY].length;
+cacheStore[KEY] = C("JSON.stringify([customModels[0]])");
+check("构造旧缓存可复现明显膨胀", cacheStore[KEY].length > cacheCleanSize * 10);
+C("cmLoad()");
+check("旧缓存单次迁移后有效模型仍在", C("customModels.length") === 1);
+check("迁移已回写精简数据", !cacheStore[KEY].includes("_cmMask") && cacheStore[KEY].length === cacheCleanSize);
+C("var exported=window.ConeLabCustom.exportJSON(); window.ConeLabCustom.importJSON(exported)");
+check("导入导出往返保留几何且重建ID", C("customModels.length===2 && customModels[0].id!==customModels[1].id && JSON.stringify(customModels[0].geo)===JSON.stringify(customModels[1].geo)"));
+check("非法非有限坐标整批拒绝", C("(function(){var n=customModels.length;try{cmImportJSON([{geo:{p:[NaN,0,0,0,0,0,0,0,0]}}]);}catch(e){}return customModels.length===n;})()"));
+C("cmOpenOverlay(); var list=document.getElementById('cmList'), rb=document.createElement('button'); rb.setAttribute('data-act','rename'); rb.setAttribute('data-id',customModels[0].id); list.appendChild(rb); list.dispatch('click',{target:rb});");
+check("大写BUTTON真实点击打开改名", C("document.getElementById('cmRenameDlg').hidden") === false);
+C("document.getElementById('cmRenameInput').value='事件改名'; document.getElementById('cmRenameOk').dispatch('click');");
+check("改名事件写回持久库", C("customModels[0].name") === "事件改名" && cacheStore[KEY].includes("事件改名"));
+C("var db=document.createElement('button');db.setAttribute('data-act','delete');db.setAttribute('data-id',customModels[0].id);document.getElementById('cmList').appendChild(db);document.getElementById('cmList').dispatch('click',{target:db});");
+check("删除事件先显示确认", C("!document.getElementById('cmDeleteDlg').hidden && customModels.length===2"));
+C("document.getElementById('cmDeleteOk').dispatch('click');");
+check("确认后仅删除目标模型", C("customModels.length") === 1);
+C("recStart('记录测试'); faces.push({type:'horiz',ang:0,x:0,y:8,z:0,on:true,flip:false}); refresh(); recFlush();");
+const savedRecords = JSON.parse(C("JSON.stringify(window.ConeLabRecords.list())"));
+check("创建改动自动进入记录", savedRecords.length === 1 && savedRecords[0].snap.faces.length === 1);
+C("showHome(true); applyShape('cyl'); window.ConeLabRecords.restore(" + JSON.stringify(savedRecords[0].id) + ")");
+check("记录恢复功能与切面参数", C("shape==='cone' && faces.length===1 && faces[0].y===8"));
+check("管理列表移除放置操作", !C("document.getElementById('cmList').innerHTML").includes('data-act="place"'));
+/* 执行帧队列，不能只用空 RAF 桩验证生命周期。 */
+const frameQueue = new Map(); let frameSeq = 0;
+app.__ctx.requestAnimationFrame = app.__window.requestAnimationFrame = fn => { const id=++frameSeq; frameQueue.set(id,fn); return id; };
+app.__ctx.cancelAnimationFrame = app.__window.cancelAnimationFrame = id => frameQueue.delete(id);
+function advanceFrames(){ const batch=[...frameQueue.values()]; frameQueue.clear(); batch.forEach(fn=>fn(0)); }
+const beforeAuto = app.__window.ConeLabCustom.list().length;
+app.__window.CADLab.close();
+check("建模台返回自动永久保存成品", app.__window.ConeLabCustom.list().length === beforeAuto + 1 && /autoKey/.test(store[KEY]));
+app.__window.CADLab.open(); advanceFrames();
+const firstFrameCount = R("S.r3._renderCount");
+app.__window.CADLab.close(); app.__window.CADLab.open(); advanceFrames();
+check("建模台重进后继续提交新帧", R("S.r3._renderCount") > firstFrameCount);
+const frameCount = R("S.r3._renderCount"); advanceFrames();
+check("重进后渲染循环持续而非单帧", R("S.r3._renderCount") > frameCount && frameQueue.size === 1);
+app.__window.CADLab.close();
+check("无改动多次返回不重复自动保存", app.__window.ConeLabCustom.list().length === beforeAuto + 1);
+check("退出建模台停止帧循环", frameQueue.size === 0);
+
+section("M 底部标签栏：实验 / 设置");
+C("showHome(true)");
+const tabState = () => JSON.parse(C("JSON.stringify(window.ConeLabSettings.state())"));
+check("启动在首页，标签栏在右下角显示", tabState().barVisible && tabState().activeTab === "experiment" && !tabState().settingsOpen,
+  JSON.stringify(tabState()));
+C("document.getElementById('tabbar').dispatch('click',{target:document.getElementById('tab-settings')})");
+check("点右下角「设置」进入独立设置页", tabState().settingsOpen && tabState().activeTab === "settings" && tabState().barVisible,
+  JSON.stringify(tabState()));
+check("设置页包含数据存储/自建模型/创建记录", C("!!document.getElementById('cmDataStat') && !!document.getElementById('cmModelCard') && !!document.getElementById('cmRecords')"));
+C("document.getElementById('tabbar').dispatch('click',{target:document.getElementById('tab-experiment')})");
+check("设置页点「实验」回到功能列表", !tabState().settingsOpen && tabState().activeTab === "experiment" &&
+  C("document.getElementById('home').hidden") === false);
+C("applyShape('cyl'); showHome(false);");
+check("进入单元后隐藏标签栏（不挡操作）", tabState().barVisible === false);
+C("window.ConeLabSettings.open();");
+check("单元内打开设置仍可用", tabState().settingsOpen && tabState().activeTab === "settings");
+C("window.ConeLabSettings.close();");
+check("设置关闭后回到单元（首页仍隐藏、标签栏不出现）", !tabState().settingsOpen &&
+  C("document.getElementById('home').hidden") === true && tabState().barVisible === false);
+C("window.ConeLabSettings.clearRecords(); recStart('清空测试'); faces.push({type:'horiz',ang:0,x:0,y:5,z:0,on:true,flip:false}); refresh(); recFlush(); window.ConeLabSettings.open();");
+check("数据存储显示记录条数", /记录 <b>1<\/b> 条/.test(C("document.getElementById('cmDataStat').innerHTML")));
+C("window.ConeLabSettings.clearRecords();");
+check("清空后记录列表与统计归零", C("window.ConeLabRecords.list().length") === 0 &&
+  /记录 <b>0<\/b> 条/.test(C("document.getElementById('cmDataStat').innerHTML")));
+C("document.getElementById('cmToggleModels').dispatch('click');");
+check("「收起」折叠自建模型列表", C("document.getElementById('cmModelCard').classList.contains('collapsed')") === true);
+C("document.getElementById('cmToggleModels').dispatch('click');");
+check("再点「展开」恢复列表", C("document.getElementById('cmModelCard').classList.contains('collapsed')") === false);
+
 console.log("\n结果: " + pass + " 通过, " + fail + " 失败");
 
 
