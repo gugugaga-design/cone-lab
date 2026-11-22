@@ -3023,7 +3023,9 @@ function dimHex(hex, k){
            都落在**自己部件内部** → 整张盖子被着色器全片丢弃。
            跳过自己那一条（与上面分块网格 mk() 里 skip ownSpec 同一套逻辑），
            其余部件/贯穿体的裁剪照常保留。 */
-        setPartSpecs(capMat, capPartSpecs.filter(function(_, ii){ return ii !== c.ownerPart; }));
+        /* v33.75：封盖属于当前保留块，必须沿用它的体侧位。
+           全部 keep=+1 会把仍保留的重叠材料的截面挖空。 */
+        setPartSpecs(capMat, (c.parts || []).filter(function(_, ii){ return ii !== c.ownerPart; }));
         /* v33.65：封盖同样要被自建模型体积裁掉，否则重叠处盖子盖住模型。
            v33.72：封盖是**正好躺在交界面上**的平面，用"贴面模式"（不留 0.6 格余量），
            否则它会从交界另一侧探出半格，在模型轮廓上留一条青色虚线。 */
@@ -3035,7 +3037,10 @@ function dimHex(hex, k){
         cellGroup.add(cm);
       });
     }
-    /* v33.71：**体与体的分界也要封盖**（用户 c 图"交叠处的蓝色阴影"）。
+    /* v33.75：跨体表面只属于仍保留的材料块。
+       隐藏块没有材料，不能靠它生成不透明补面，否则被切掉的区域会留下皮。
+       保留块仍生成交界封盖；工程面封盖同时沿用当前块的部件侧位。
+       v33.71 历史说明：**体与体的分界也要封盖**（用户 c 图"交叠处的蓝色阴影"）。
        现象：圆台（拼装部件）与自建模型重叠时，把其中一块隐藏后，交叠处残留
        一片深蓝的"阴影" —— 那其实是**交界另一侧材料的背面（内壁）**。
        根因：分块只在**工程面**（平面）上生成封盖；当两个体的分界是
@@ -3047,7 +3052,7 @@ function dimHex(hex, k){
        裁剪用本块原有的规格（planes + cyls + parts + cm）：
        v33.70 给 partInsideM / cmMaskSD 都加了余量，贴在表面上的片元不会被边界抖动误裁，
        所以这一层补面正好落在"本块材料范围内"，不会糊到别的块上。 */
-    {
+    if(c.sel){
       /* 补面沿 B 的表面法向**往体内几何偏移 0.06mm**（见下面 capGeoOf）：
          体可见时被自己的表面挡住，体隐藏时才露出来当实心切口。
          只用 polygonOffset 不够稳（斜率项在共面时互相抵消、单位项又太小），
@@ -3084,14 +3089,8 @@ function dimHex(hex, k){
         cache[key] = g2; cellOwnGeos.push(g2);
         return g2;
       };
-      /* v33.72：**隐藏的块也要补**（而且要不透明）—— 用户"切除后有蓝色阴影"的真正原因：
-         某块被隐藏后，它原本占据的空间变成一个**洞**；洞的壁是"另一个体的表面"
-         （部件与模型的分界面）。这块是隐藏的，之前不补 → 洞敞着 → 看到的是本体的
-         **背面（内壁）**，边界还按三角面走 = 一圈扇贝状的深色锯齿。
-         现在对每个块都补"别的体"的表面（颜色=那个体自己的），不透明：
-           · 块可见 → 与那个体的表面完全重合，看不出来；
-           · 块隐藏 → 正好把洞的壁补成材料色，读起来是实心切口。
-         自己的体仍然跳过（那是被挖掉的那层皮，补上就"没隐藏"了）。 */
+      /* v33.75：仅保留块可以提供不透明交界面；隐藏块只保留可恢复点选的幽灵层。
+         不能用隐藏块补别人的表面：两侧材料都移除时，那张表面就会成为残皮。 */
       var capOp = 1;
       for(var bp=0; bp<psC.length; bp++){
         if(c.ownerPart === bp) continue;                 // 本块几何就是它，不用再补
@@ -8195,6 +8194,13 @@ function cmBakeSources(){
   return src;
 }
 function cmBakeTriangles(){
+  /* v33.76：烘焙前先把"待重建"的分块补上。拖动面/贯穿体时 cellsDirty 会置位、
+     真正的重建要等下一帧；用户恰好在这一瞬间点保存，烘到的就是**旧状态的切口**
+     （用户反馈"模型在移动过程中会有异常的线，保存时正好有就一直存在"）。
+     这里同步重建一次，保证存下来的一定是屏幕上的那份几何。 */
+  if(mode === "pick" && cellsDirty){
+    try{ rebuildCells(); buildCellVis(); cellsDirty = false; }catch(_){ }
+  }
   try{ scene.updateMatrixWorld(true); }catch(e){ }
   var all=[];
   cmBakeSources().forEach(function(m){
@@ -8298,17 +8304,41 @@ function cmDropDegenerate(tris){
   for(var i=0;i<tris.length;i++) if(cmTriArea2(tris[i]) > 1e-6) out.push(tris[i]);
   return out.length ? out : tris;      // 全是退化三角形时保持原样，别把模型清空
 }
-/* 顶点焊接（容差 0.11mm）：烘焙出来的网格其实是"几片各自独立的壳"拼的 ——
-   切面片由 cellCaps 生成、为躲 z-fighting 沿法向平移了 0.08mm，
-   与侧面顶点的坐标差 0.01~0.08 → 顶圈不是共享边（既画不出切棱、法向也接不上）。
-   焊一遍之后切面和侧面真正连起来：切棱成为正常的二面角棱，明暗也按同一套平滑组算。 */
-function cmWeldFlat(flat, tol){
-  var n=flat.length/3, map={}, reps=[], i, dx, dy, dz;
-  function cellOf(x,y,z,o){
-    return Math.floor((x+o)/tol)+","+Math.floor((y+o)/tol)+","+Math.floor((z+o)/tol);
+/* 每个三角形的几何法向（cmWeldFlat 跨曲面合并检查用）。
+   退化三角形返回 null，与 cmSolidEdges 的处理一致。 */
+function cmTriNormals(tris){
+  var out=new Array(tris.length);
+  for(var i=0;i<tris.length;i++){
+    var t=tris[i];
+    var ux=t[1].p.x-t[0].p.x, uy=t[1].p.y-t[0].p.y, uz=t[1].p.z-t[0].p.z;
+    var vx=t[2].p.x-t[0].p.x, vy=t[2].p.y-t[0].p.y, vz=t[2].p.z-t[0].p.z;
+    var nx=uy*vz-uz*vy, ny=uz*vx-ux*vz, nz=ux*vy-uy*vx;
+    var l=Math.sqrt(nx*nx+ny*ny+nz*nz);
+    out[i]=(l>1e-9)?[nx/l,ny/l,nz/l]:null;
   }
+  return out;
+}
+/* 顶点焊接（容差 0.12mm）：烘焙出来的网格其实是"几片各自独立的壳"拼的 ——
+   切面片由 cellCaps 生成、为躲 z-fighting 沿法向平移了 0.08mm，
+   与侧面顶点的坐标差 0.08 → 顶圈不是共享边（法向接不上、边上判不出转折）。
+   焊一遍之后同一片壳内的重复顶点合并，网格连成一体。
+
+   ★ v33.76（用户：「模型被切割的边缘线显示有问题，一旦存的时候有问题就一直有问题」）：
+   旧代码**只按距离**合并，于是把 0.08mm 之外的**切面片和侧面片也并成了一个点**
+   （实测切面顶点距平面 -0.084，被裁的侧面顶点正好在平面上，差 0.084 < 0.12），
+   并把切面片的坐标改写成"先出现的那个点"。哪一半切面顶点恰好旁边有侧面顶点、
+   哪一半没有 —— 完全取决于三角形顺序，于是**切面被拉成了非平面的波浪面**：
+   相邻两片切面三角形出现 70°~126° 的假二面角（实测 29 条），棱线判据把每一道褶皱
+   都画出来 → 切面上放射状的一排长线，而且一旦存盘就永久烙进模型里。
+   现在合并前先比**两侧三角形的法向**：二面角 > 24° 视为不同曲面（切面 vs 侧面），
+   绝不合并。同一片曲面内的焊接行为与旧版完全一致，折面/切口因此永远是平的。 */
+function cmWeldFlat(flat, tol, triN){
+  var n=flat.length/3, map={}, reps=[], repN=[], i, dx, dy, dz;
+  var cosS = Math.cos(24*Math.PI/180);
+  function triIdx(v){ return Math.floor(v/3); }
   for(i=0;i<n;i++){
     var x=flat[i*3], y=flat[i*3+1], z=flat[i*3+2], hit=-1;
+    var nv = triN ? triN[triIdx(i)] : null;
     var cx=Math.floor(x/tol), cy=Math.floor(y/tol), cz=Math.floor(z/tol);
     for(dx=-1;dx<=1 && hit<0;dx++) for(dy=-1;dy<=1 && hit<0;dy++) for(dz=-1;dz<=1 && hit<0;dz++){
       var lst=map[(cx+dx)+","+(cy+dy)+","+(cz+dz)];
@@ -8316,16 +8346,22 @@ function cmWeldFlat(flat, tol){
       for(var j=0;j<lst.length;j++){
         var r=reps[lst[j]];
         var ex=r[0]-x, ey=r[1]-y, ez=r[2]-z;
-        if(ex*ex+ey*ey+ez*ez <= tol*tol){ hit=lst[j]; break; }
+        if(ex*ex+ey*ey+ez*ez > tol*tol) continue;
+        /* 跨曲面不合并：切面片与侧面片在 0.08mm 内相遇，但法向差 ~90° */
+        if(nv){
+          var rn=repN[lst[j]];
+          if(rn && (nv[0]*rn[0]+nv[1]*rn[1]+nv[2]*rn[2]) <= cosS) continue;
+        }
+        hit=lst[j]; break;
       }
     }
     if(hit<0){
-      hit=reps.length; reps.push([x,y,z]);
+      hit=reps.length; reps.push([x,y,z]); repN.push(nv);
       var k0=cx+","+cy+","+cz;
       if(!map[k0]) map[k0]=[];
       map[k0].push(hit);
     } else {
-      /* 用代表点的坐标（近似把偏移的切面片拉回表面，位移 ≤0.11mm） */
+      /* 用代表点的坐标（同一片曲面内合并，位移 ≤0.12mm，不破坏平面度） */
       flat[i*3]=reps[hit][0]; flat[i*3+1]=reps[hit][1]; flat[i*3+2]=reps[hit][2];
     }
   }
@@ -8340,7 +8376,9 @@ function cmGeomData(tris){
   sel.forEach(function(t){
     t.forEach(function(v){ flat[nv++]=v.p.x; flat[nv++]=v.p.y; flat[nv++]=v.p.z; });
   });
-  cmWeldFlat(flat, 0.12);
+  /* v33.76：焊接要带每个三角形的法向，跨曲面（切面 vs 侧面）不许合并，
+     否则切面被拉成波浪面、棱线上冒出一排假线（详见 cmWeldFlat 注释）。 */
+  cmWeldFlat(flat, 0.12, cmTriNormals(sel));
   var lo=[1e18,1e18,1e18], hi=[-1e18,-1e18,-1e18];
   for(i=0;i<flat.length;i+=3){
     for(var j=0;j<3;j++){
@@ -8498,7 +8536,7 @@ function cmEnsureVisible(idx){
       所以顶点要先按**容差焊接**（tol=0.12mm，空间哈希 + 邻格搜索）再建边。 */
 function cmSolidEdges(g, deg){
   var pos=g.getAttribute("position"), tris=Math.floor(pos.count/3), i, k;
-  var map={}, keys=[], triN=[];
+  var map={}, keys=[], triN=[], triP=[];
   var tol=0.12, cell={}, reps=[];
   function vid(x,y,z){
     var cx=Math.floor(x/tol), cy=Math.floor(y/tol), cz=Math.floor(z/tol);
@@ -8524,15 +8562,16 @@ function cmSolidEdges(g, deg){
     var ux=bx-ax, uy=by-ay, uz=bz-az, vx=cx2-ax, vy=cy2-ay, vz=cz2-az;
     var nx=uy*vz-uz*vy, ny=uz*vx-ux*vz, nz=ux*vy-uy*vx;
     var l=Math.sqrt(nx*nx+ny*ny+nz*nz);
-    if(!(l>1e-9)){ triN.push(null); continue; }
+    if(!(l>1e-9)){ triN.push(null); triP.push(null); continue; }
     triN.push([nx/l,ny/l,nz/l]);
     var ps=[[ax,ay,az],[bx,by,bz],[cx2,cy2,cz2]];
+    triP.push(ps);
     for(k=0;k<3;k++){
       var p=ps[k], q=ps[(k+1)%3];
       var ia=vid(p[0],p[1],p[2]), ib=vid(q[0],q[1],q[2]);
       if(ia===ib) continue;                       // 退化到同一个点
       var ek=(ia<ib)?(ia+"#"+ib):(ib+"#"+ia);
-      if(!map[ek]){ map[ek]={a:reps[ia], b:reps[ib], t:[i]}; keys.push(ek); }
+      if(!map[ek]){ map[ek]={a:reps[ia], b:reps[ib], t:[i], ia:ia, ib:ib}; keys.push(ek); }
       else map[ek].t.push(i);
     }
   }
@@ -8545,6 +8584,35 @@ function cmSolidEdges(g, deg){
     if(cl<1e-6) return false;
     return Math.abs((dx*cx+dy*cy+dz*cz)/(L*cl)) > 0.97;
   }
+  /* ★ v33.76：折痕深度守卫。共边的两片三角形，各自"第三点"到对方平面的距离
+     就是这道折痕的真实深度。焊接（含 v33.76 之前的旧存盘数据）会把相距
+     0.08~0.12mm 的顶点并成一个点，把原本共面的切面片揉出 0.1~0.3mm 的浅褶皱，
+     二面角动辄 25°~126° —— 全是假棱（用户截图：切面上一排放射状长线）。
+     真棱（切面⊥侧面、切口轮廓）的折痕深度是毫米级起步（实测本场景最小 57mm），
+     0.3mm 以下的一律当焊接噪声不画。 */
+  function creaseDepth(ia, ib, i1, i2){
+    var P1=triP[i1], P2=triP[i2], n1=triN[i1], n2=triN[i2];
+    var A=reps[ia], B=reps[ib];
+    /* 第三点 = 本三角形里不属于这条棱的顶点。判定用焊接容差（顶点坐标
+       可能已经被并到代表点上，与 triP 里的原始坐标差 ≤tol） */
+    function third(P, A, B){
+      for(var t=0;t<3;t++){
+        var p=P[t];
+        var dxa=p[0]-A[0], dya=p[1]-A[1], dza=p[2]-A[2];
+        if(dxa*dxa+dya*dya+dza*dza < tol*tol) continue;
+        var dxb=p[0]-B[0], dyb=p[1]-B[1], dzb=p[2]-B[2];
+        if(dxb*dxb+dyb*dyb+dzb*dzb < tol*tol) continue;
+        return p;
+      }
+      return null;
+    }
+    var C1=third(P1,A,B), C2=third(P2,A,B);
+    if(!C1 || !C2) return 0;
+    var d12=Math.abs(n2[0]*(C1[0]-A[0])+n2[1]*(C1[1]-A[1])+n2[2]*(C1[2]-A[2]));
+    var d21=Math.abs(n1[0]*(C2[0]-A[0])+n1[1]*(C2[1]-A[1])+n1[2]*(C2[2]-A[2]));
+    return Math.max(d12, d21);
+  }
+  var CREASE_MIN = 0.3;
   var out=[], cosLim=Math.cos(deg*Math.PI/180);
   keys.forEach(function(ek){
     var e=map[ek], ts=e.t, draw=false;
@@ -8561,7 +8629,12 @@ function cmSolidEdges(g, deg){
       for(var b2=a+1;b2<ts.length;b2++){
         var n1=triN[ts[a]], n2=triN[ts[b2]];
         if(!n1 || !n2) continue;
-        if(n1[0]*n2[0]+n1[1]*n2[1]+n1[2]*n2[2] <= cosLim && !isSeam(e,n1,n2)){ draw=true; break; }
+        if(n1[0]*n2[0]+n1[1]*n2[1]+n1[2]*n2[2] <= cosLim && !isSeam(e,n1,n2)){
+          /* v33.76：折痕深度守卫——二面角过了阈值，深度却只有零点几毫米，
+             这是焊接把共面片揉出的浅褶皱（老存盘数据里尤其多），不是真棱 */
+          if(creaseDepth(e.ia, e.ib, ts[a], ts[b2]) < CREASE_MIN) continue;
+          draw=true; break;
+        }
       }
     }
     if(!draw) return;

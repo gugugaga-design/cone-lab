@@ -499,6 +499,17 @@ check("整组跨过了『另一个体切出来的那几段』（含点不到的�
 check("藏掉之后该块进入幽灵层（还能点回来）",
   R(`(function(){var n=0;cellGroup.children.forEach(function(m){
     if(m.userData.front && m.userData.ck==='${jKey}' && m.material.opacity<0.1)n++;});return n;})()`) >= 1);
+/* v33.75：隐藏材料不能再生成不透明跨体皮；保留材料仍须有交界封盖。 */
+check("隐藏整组后，不再从隐藏块生成不透明跨体补面",
+  R("cellGroup.children.every(function(m){return !m.userData.capBody || cellOfKey(m.userData.ck).sel;})") === true);
+check("隐藏一侧后，保留材料的跨体封盖仍然存在",
+  R("cellGroup.children.some(function(m){return m.userData.capBody && cellOfKey(m.userData.ck).sel;})") === true);
+R("cells.forEach(function(c){c.sel=false;pickSel[c.key]=false;});buildCellVis();");
+check("所有材料都切除后，没有不透明封盖残留",
+  R("cellGroup.children.every(function(m){return !(m.userData.cap || m.userData.capBody);})") === true);
+R("cells.forEach(function(c){c.sel=true;});pickSel={};buildCellVis();");
+/* 恢复刚才隐藏整组的状态，再验证原地点选恢复。 */
+R(`cells.forEach(function(c){if(cellGroupOf(c.key)===cellGroupOf(${JSON.stringify(jKey)})){c.sel=false;pickSel[c.key]=false;}});buildCellVis();`);
 /* 原地再点一下（先把"连点轮换"指针挪开，免得切到"整个部件"那个粒度）→ 恢复 */
 R("_pickCycle.x=-9999; _pickCycle.y=-9999;");
 tapAt(jScreen[0], jScreen[1]);
@@ -526,6 +537,16 @@ check("补面的颜色 = 那个体自己的颜色（不再互相染色）",
   }), JSON.stringify(jCap.map(function(x){ return x.of + ":" + x.c; })));
 check("补面是不透明的（隐藏块的洞壁要能挡住内壁）",
   jCap.every(function(x){ return x.op === 1; }), JSON.stringify(jCap.map(function(x){ return x.op; })));
+check("工程面封盖按保留块的部件侧位裁剪，重叠内部不被强制挖空",
+  R(`(function(){var ok=true,n=0;cellGroup.children.forEach(function(m){
+    if(!m.userData.cap)return;var c=cellOfKey(m.userData.ck);
+    var want=(c.parts||[]).filter(function(_,i){return i!==c.ownerPart;});
+    var got=cylUniformsOf(m.material); n++;
+    for(var i=0;i<4;i++){
+      if(got.uPartK.value[i].x!==(want[i]?want[i].keep:0))ok=false;
+      if(got.uPartC.value[i].w!==(want[i]?want[i].type:0))ok=false;
+    }
+  });return ok&&n>0;})()`) === true);
 /* v33.72：背面（内壁）改成"同色系暗调"，不再是深蓝 0x2f6a8f / 深棕 0x4b2a14 */
 const jBack = JSON.parse(R(`(function(){var o=[];cellGroup.children.forEach(function(m){
   if(m.userData.front === false && m.userData.ck && m.material && m.material.color)
@@ -553,6 +574,66 @@ R(`(function(){for(var i=customModels.length-1;i>=0;i--){
   }
   cmPersist(); cmRenderHome(); cmRenderChips();
   parts.length=0; faces.length=0; pickSel={}; applyShape('cyl');})()`);
+
+section("K 切面假棱：焊接不许把切面揉成波浪面（v33.76）");
+/* 用户 bug：「自存模型上被切割的边缘线显示有问题，一旦存的时候有问题就一直有问题」。
+   根因：保存时 cmWeldFlat 只按距离合并，把 0.08mm 偏移的切面片与侧面片并成一个点，
+   切面被拉成非平面 → 相邻切面三角形出现 25°~126° 的假二面角 → 棱线画出一排放射状长线。 */
+R("applyShape('cone'); window.ConeLabCustom.clearPlaced();");
+R("var dv=TYPES['lv'].defaults; faces=[{type:'lv',ang:dv.ang,x:dv.x,y:dv.y,z:dv.z,on:true,flip:false}]; mode='pick'; refresh();");
+R("if(cellsDirty){rebuildCells();buildCellVis();cellsDirty=false;}");
+R("(function(){var n=0;cells.forEach(function(c){var ys=0;c.pts.forEach(function(q){ys+=q.y;});if(ys/c.pts.length>0){c.sel=false;pickSel[c.key]=false;n++;}});buildCellVis();return n;})()");
+const edgeData = JSON.parse(R("JSON.stringify(cmGeomData(cmBakeTriangles()))"));
+check("烘焙仍出三角形", edgeData.t > 100, edgeData.t);
+/* 切面顶点到切面平面的偏差必须一致（= 切面还是平的，没被焊接揉皱）。
+   侧垂面 30°：n=(0,cos30,sin30)，过 y=22 → d=n·(0,22,0)=19.0526 */
+const capSpread = JSON.parse(R(`(function(){
+  var P=${JSON.stringify(edgeData.p)}, C=${JSON.stringify(edgeData.c)};
+  var ny=Math.cos(Math.PI/6), nz=Math.sin(Math.PI/6), d=22*Math.cos(Math.PI/6);
+  var dl=d-ny*C[1]-nz*C[2], devs=[];
+  for(var i=0;i<P.length;i+=3){
+    var dev=ny*P[i+1]+nz*P[i+2]-dl;
+    if(Math.abs(dev)<0.4) devs.push(dev);
+  }
+  var lo=1e9,hi=-1e9;
+  devs.forEach(function(v){ if(v<lo)lo=v; if(v>hi)hi=v; });
+  return JSON.stringify({n:devs.length, spread:hi-lo});
+})()`));
+check("切面顶点仍在同一平面上（未被焊接揉皱）", capSpread.n > 40 && capSpread.spread < 0.11,
+  JSON.stringify(capSpread));
+/* 放置后棱线里不许有"切面内部的长线"（假棱特征：两端都落在切面平面内、长度 > 1.5mm） */
+R("coneGroup && coneGroup.traverse(function(o){ if(o.isMesh) o.visible=false; }); if(cellGroup) cellGroup.visible=false; if(partGroup) partGroup.visible=false;");
+const edgeRec = JSON.parse(R("JSON.stringify(window.ConeLabCustom.save(" + JSON.stringify(edgeData) + ",'perm','切棱验收','cone'))"));
+R("window.ConeLabCustom.clearPlaced(); window.ConeLabCustom.place('" + edgeRec.id + "');");
+const fakeEdges = JSON.parse(R(`(function(){
+  var pe=placedCustom[0], e=cmSolidEdges(pe.mesh.geometry,24), out=[], C=${JSON.stringify(edgeData.c)};
+  var ny=Math.cos(Math.PI/6), nz=Math.sin(Math.PI/6), d=22*Math.cos(Math.PI/6)-ny*C[1]-nz*C[2];
+  function dev(p){ return Math.abs(ny*p.y+nz*p.z-d); }
+  for(var i=0;i<e.length;i+=2){
+    var L=e[i].distanceTo(e[i+1]);
+    if(L>1.5 && dev(e[i])<0.45 && dev(e[i+1])<0.45) out.push(+L.toFixed(2));
+  }
+  return JSON.stringify(out);
+})()`));
+check("切面内部没有假棱（放射状长线已消失）", fakeEdges.length === 0, JSON.stringify(fakeEdges));
+const rimCount = JSON.parse(R(`(function(){
+  var pe=placedCustom[0], ch=pe.mesh.children, e=null;
+  for(var i=0;i<ch.length;i++) if(ch[i].isLineSegments) e=ch[i];
+  if(!e) return 0;
+  var pos=e.geometry.attributes.position, C=${JSON.stringify(edgeData.c)};
+  var ny=Math.cos(Math.PI/6), nz=Math.sin(Math.PI/6), d=22*Math.cos(Math.PI/6)-ny*C[1]-nz*C[2], on=0;
+  for(var i=1;i<pos.count;i+=3){
+    if(Math.abs(ny*pos.getY(i)+nz*pos.getZ(i)-d)<0.45) on++;
+  }
+  return on;
+})()`));
+check("切面轮廓那一圈棱还在", rimCount >= 20, rimCount + " 个端点落在切面上");
+/* 收尾：K 段用掉的临时记录/场景状态清掉，别影响后面的建模台段落 */
+R("customModels = customModels.filter(function(r){ return r.name!=='切棱验收'; }); cmPersist();");
+R("window.ConeLabCustom.clearPlaced();");
+R("faces=[]; mode='pick'; refresh(); if(cellsDirty){rebuildCells();buildCellVis();cellsDirty=false;}");
+/* 恢复前面的场景状态：D 段换到了「圆柱」卡，F 段要接着用它 */
+R("applyShape('cyl'); mode='all'; refresh();");
 
 section("E 建模台成品也进同一个库");
 const html = fs.readFileSync(path.join(__dirname, "../src/index.html"), "utf8");
@@ -612,5 +693,8 @@ check("可以自行改名", libNames().indexOf("我自己的名字") >= 0, JSON.
 check("改名同步到卡片行", chips().some(function (c) { return c.name === "我自己的名字"; }));
 check("改名写进 localStorage", /我自己的名字/.test(store[KEY] || ""));
 
+
 console.log("\n结果: " + pass + " 通过, " + fail + " 失败");
+
+
 if (fail) process.exit(1);

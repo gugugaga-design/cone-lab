@@ -43,7 +43,7 @@ check("buildCellVis 每次重建时清空封盖缓存",
 check("cellCaps 对 ownerPart 块路由到 partSectionPoly2D",
       /var sp = ownPr \? partSectionPoly2D\(ownPr, o\.nv, o\.d\)[\s\S]{0,140}?sectionPoly2D\(o\.nv, o\.d, 96\);/.test(HTML));
 check("封盖材质跳过自己部件的 spec（不被自己挖空）",
-      /setPartSpecs\(capMat, capPartSpecs\.filter\(function\(_, ii\)\{ return ii !== c\.ownerPart; \}\)\);/.test(HTML));
+      /setPartSpecs\(capMat, \(c\.parts \|\| \[\]\)\.filter\(function\(_, ii\)\{ return ii !== c\.ownerPart; \}\)\);/.test(HTML));
 check("封盖颜色跟随部件配色（变实青色 / 未变实青蓝）",
       /color: ownPart \? \(tintPart \? 0x12d6c8 : 0x8fd8ff\) : \(ownCm \? 0xd9832f : 0xdd7a34\)/.test(HTML));
 
