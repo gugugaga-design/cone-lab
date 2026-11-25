@@ -772,6 +772,209 @@ check("「收起」折叠自建模型列表", C("document.getElementById('cmMode
 C("document.getElementById('cmToggleModels').dispatch('click');");
 check("再点「展开」恢复列表", C("document.getElementById('cmModelCard').classList.contains('collapsed')") === false);
 
+section("N v33.79 拼装/放置出来的实体也能「存为自建」");
+/* 用户报：实验室里用「模型拼装」把两个长方体拼在一起（w50/d40/h10 @0,0,0 与
+   w30/d30/h30 @40,0,0，没有做任何面切割），点左侧「存为自建」却提示
+   "当前没有可保存的剩余实体"，自建模型存不出来。
+   根因：旧烘焙源只认 主立体 / 点选分块 / 交集封盖 / 孔壁，**拼装部件从没进过烘焙源**；
+   而实验室的主立体是 0 顶点占位体 → 烘出来 0 个三角面 → cmGeomData 返回 null。 */
+const nb = boot(), Q = code => nb.run(code);
+nb.__ctx.Blob = Blob;
+Q("applyShape('lab'); showHome(false); mode='all'; refresh();");
+Q("parts.length=0;" +
+  "addPart('box'); parts[0].w=50;parts[0].d=40;parts[0].h=10;parts[0].x=0;parts[0].y=0;parts[0].z=0;" +
+  "addPart('box'); parts[1].w=30;parts[1].d=30;parts[1].h=30;parts[1].x=40;parts[1].y=0;parts[1].z=0;" +
+  "buildParts(); refresh();");
+check("实验室里主立体是空占位体（以前一块面都烘不到）", Q("cmMainGeoUsable()") === false);
+const nAsm = JSON.parse(Q("JSON.stringify(cmBakeData())"));
+check("两个拼装长方体一起烘成模型", nAsm && nAsm.t >= 20, nAsm && (nAsm.t + " 面"));
+check("模型中心落在两个实体之间", nAsm && Math.abs(nAsm.c[0] - 15) < 2, nAsm && JSON.stringify(nAsm.c));
+/* 真实按钮：这个场景点「存为自建」必须弹保存框，而不是提示没有实体 */
+Q("document.getElementById('btnSaveCustom').dispatch('click')");
+check("「存为自建」弹出保存框（不再提示没有剩余实体）",
+  Q("document.getElementById('cmSaveDlg').hidden") === false);
+check("保存框里写明面数", /\d+ 个三角面/.test(Q("document.getElementById('cmDlgInfo').textContent")));
+Q("document.getElementById('cmCancel').dispatch('click')");
+/* 有主立体的卡：默认半透明拼装部件只是定位引导体，不擅自写进模型（旧行为不变） */
+Q("applyShape('cone'); parts.length=0; faces.length=0; cyls.length=0; refresh();");
+const nCone = JSON.parse(Q("JSON.stringify(cmBakeData())"));
+check("只有主立体时记录不带实体分组（老格式不膨胀）", nCone && nCone.t > 0 && nCone.g === undefined,
+  nCone && (nCone.t + " 面 / g=" + (nCone.g ? "有" : "无")));
+Q("addPart('box'); parts[0].w=44;parts[0].h=42;parts[0].d=44;parts[0].x=0;parts[0].y=0;parts[0].z=0;buildParts();refresh();");
+const nConePart = JSON.parse(Q("JSON.stringify(cmBakeData())"));
+check("有主立体时半透明部件不写进模型（与旧行为一致）", nConePart.t === nCone.t, nCone.t + " → " + nConePart.t);
+Q("partTint=true; buildParts(); refresh();");
+const nConeTint = JSON.parse(Q("JSON.stringify(cmBakeData())"));
+check("按了「拼装变实」后部件作为实体写进模型", nConeTint.t > nCone.t, nCone.t + " → " + nConeTint.t);
+Q("partTint=false; buildParts(); refresh();");
+/* 两块**重叠**的拼装体：存成模型再放回来，重叠区必须按并集判成实体。
+   旧实现把所有三角面混成一份只数总奇偶（XOR），重叠区被抵消成"外部"，切出来是个洞。 */
+Q("applyShape('lab'); parts.length=0; faces.length=0; cyls.length=0; cmClearPlaced(); refresh();");
+Q("addPart('box'); parts[0].w=40;parts[0].d=40;parts[0].h=40;parts[0].x=-8;parts[0].y=0;parts[0].z=-8;" +
+  "addPart('box'); parts[1].w=40;parts[1].d=40;parts[1].h=40;parts[1].x=8;parts[1].y=0;parts[1].z=8;" +
+  "buildParts(); refresh();");
+const nOver = JSON.parse(Q("JSON.stringify(cmBakeData())"));
+check("重叠拼接的模型带着「每块实体」分组",
+  !!(nOver && nOver.g && nOver.g.length === nOver.t && nOver.g.indexOf(1) >= 0),
+  nOver && (nOver.g ? nOver.g.length + " 项 / " + nOver.g.join("") : "none"));
+Q("var nrec=cmSaveGeometry(" + JSON.stringify(nOver) + ",'perm','重叠拼接','lab'); cmPlace(nrec.id,[0,0,0]);");
+check("存盘记录保留实体分组", Q("!!customModels[customModels.length-1].geo.g") === true);
+Q("var nEx=cmExportJSON(); window.__nIm=cmParseImport(nEx);");
+check("导出 / 导入往返保留实体分组",
+  Q("!!(window.__nIm && window.__nIm[0].geo.g && window.__nIm[0].geo.g.length===window.__nIm[0].tris)") === true);
+const nInside = JSON.parse(Q(`(function(){
+  var pe=placedCustom[placedCustom.length-1];
+  function ins(x,y,z){ return cmInsideBody(pe,new THREE.Vector3(x,y,z)); }
+  return JSON.stringify({
+    gOnGeom:!!(pe.mesh.geometry.userData && pe.mesh.geometry.userData.cmGroups),
+    overlap: ins(0,0,0), a: ins(-20,0,-8), b: ins(8,0,20), out: ins(25,0,-25),
+    sd: cmMaskSDAt(pe,new THREE.Vector3(0,0,0)),
+    nd: cmMaskSDAt(pe,new THREE.Vector3(25,0,-25))
+  });
+})()`));
+check("放置后几何带着分组做点内判定", nInside.gOnGeom === true);
+check("两块重叠区按并集判成实体（以前被 XOR 抵消成洞）",
+  nInside.overlap === true && nInside.sd < 0, JSON.stringify(nInside));
+check("各块单独区域 / 外部区域的判定仍然正确",
+  nInside.a === true && nInside.b === true && nInside.out === false && nInside.nd > 0, JSON.stringify(nInside));
+/* 放置的拼接模型要能真的参与「点选保留部分」：重叠区有块可选，且不重复烘部件 */
+Q("faces=[{type:'horiz',ang:0,x:0,y:0,z:0,on:true,flip:false}]; mode='pick'; refresh();" +
+  "if(cellsDirty){rebuildCells();buildCellVis();cellsDirty=false;}");
+const nPickCells = JSON.parse(Q(`(function(){var c=cellAtPoint(new THREE.Vector3(0,0,0));
+  return JSON.stringify({n:cells.length,key:c?c.key:'null',
+    hasCm:cells.some(function(cc){return /m\\d+:/.test(cc.key);})});})()`));
+check("拼接模型放置后参与点选，重叠区有块可选",
+  nPickCells.n > 0 && nPickCells.key !== "null" && nPickCells.hasCm === true, JSON.stringify(nPickCells));
+const nPickBake = JSON.parse(Q("JSON.stringify(cmBakeData())"));
+/* v33.80：点选模式的烘焙不再是"分块三角汤"（那时候切面片是单独偏移补的，
+   顶点配不上侧面 → 存出去的模型有悬空薄板和一堆假边线）。现在每块实体按
+   **闭合实体**烘：切面沿边界环封口、顶点严格共点，重新打开不会有异常面/边线。
+   分组照样写进 g（每块实体一组），所以 g 是"有"才对。 */
+check("点选模式按实体分组烘（每块实体一组）",
+  nPickBake && nPickBake.t > 0 && Array.isArray(nPickBake.g) && nPickBake.g.length === nPickBake.t,
+  nPickBake && (nPickBake.t + " 面, g=" + (nPickBake.g ? nPickBake.g.length : "none")));
+Q("window.__nPickBake80=" + JSON.stringify(nPickBake) + ";");
+const nPickWater = JSON.parse(Q(`(function(){
+  var d=window.__nPickBake80, m={}, open=0, kk;
+  function key(x,y,z){ return Math.round(x*1000)+","+Math.round(y*1000)+","+Math.round(z*1000); }
+  for(var i=0;i<d.p.length;i+=9){
+    var v=[[d.p[i]+d.c[0],d.p[i+1]+d.c[1],d.p[i+2]+d.c[2]],
+           [d.p[i+3]+d.c[0],d.p[i+4]+d.c[1],d.p[i+5]+d.c[2]],
+           [d.p[i+6]+d.c[0],d.p[i+7]+d.c[1],d.p[i+8]+d.c[2]]];
+    for(var k=0;k<3;k++){
+      var a=key(v[k][0],v[k][1],v[k][2]), b=key(v[(k+1)%3][0],v[(k+1)%3][1],v[(k+1)%3][2]);
+      if(a===b) continue;
+      var e=(a<b)?(a+"|"+b):(b+"|"+a); m[e]=(m[e]||0)+1;
+    }
+  }
+  for(kk in m) if(m[kk]===1) open++;
+  var gs={}; (d.g||[]).forEach(function(g){ gs[g]=(gs[g]||0)+1; });
+  return JSON.stringify({open:open, groups:Object.keys(gs).length, sizes:Object.keys(gs).map(function(k){return gs[k];})});
+})()`));
+check("点选模式烘出来的是闭合实体（没有开口边）", nPickWater.open === 0, JSON.stringify(nPickWater));
+check("重叠的两块各成一个实体组（不再被混成一片三角汤）",
+  nPickWater.groups === 4 && nPickWater.sizes.every(function(v){ return v === 20; }), JSON.stringify(nPickWater));
+/* 已放置的自建模型也算画面里显示成实体的东西 */
+Q("applyShape('cone'); cmClearPlaced(); parts.length=0; faces.length=0; cyls.length=0; refresh();");
+const nPlaced = JSON.parse(Q(`(function(){
+  var t0=cmBakeData().t;
+  var crec=cmSaveGeometry(cmGeomData(cmBakeTriangles()),'perm','放置叠加','cone');
+  cmPlace(crec.id,[0,0,0]);
+  var t1=cmBakeData().t;
+  return JSON.stringify({t0:t0,t1:t1,tris:crec.tris});
+})()`));
+check("已放置的自建模型也写进「画面里的实体」",
+  nPlaced.t1 === nPlaced.t0 + nPlaced.tris, JSON.stringify(nPlaced));
+
+/* ==========================================================================
+   N v33.80 用户现场：两个长方体拼装 + 侧垂面切掉上半部分
+     "再用一个侧垂面(角度30度，左右0，高低6.51，前后-8.977)切掉上半部分时，
+      会多出一个异常的面… 而且再次打开时，这个模型上面会多一些异常的边线"
+   根因（v33.79 回归）：存盘把**显示用的补面**当成了模型材料 ——
+     · cellCaps 沿法向偏移 0.08mm、轮廓还要内缩 0.2~0.5mm → 悬空小薄板 + 一圈缝；
+     · capBody 把每块体表再糊一层（内缩 0.06mm）→ z-fighting + 多余边线；
+     · 部件端面（y=±5）的分割平面把每片切面留成**开口** → 横穿侧面的那条线。
+   v33.80 的烘法：每块（实体 + 面符号）烘成一个**闭合实体**，切面沿边界环封口、
+   顶点严格共点；不参与判定的平面（别的部件的端面、连通性分割面）一律不裁。
+   本节把用户那组尺寸钉死，用**体积 / 切面面积 / 开口边 / 分组数**当验收标准。
+   ========================================================================== */
+section("N v33.80 拼装 + 侧垂面切开后存盘：水密、体积、别无中生有");
+Q("applyShape('lab'); parts.length=0; faces.length=0; cyls.length=0; cmClearPlaced(); refresh();");
+Q("addPart('box'); parts[0].w=50;parts[0].d=40;parts[0].h=10;parts[0].x=0;parts[0].y=0;parts[0].z=0;" +
+  "addPart('box'); parts[1].w=30;parts[1].d=30;parts[1].h=30;parts[1].x=40;parts[1].y=0;parts[1].z=0;" +
+  "buildParts(); refresh();");
+Q("faces=[{type:'lv',ang:30,x:0,y:6.51,z:-8.977,on:true,flip:false}]; mode='pick'; refresh();" +
+  "if(cellsDirty){rebuildCells();buildCellVis();cellsDirty=false;}");
+const uN = JSON.parse(Q("cells.length"));
+check("用户现场：侧垂面把两个长方体分成 8 块", uN === 8, uN + " 块");
+/* 上半部分（面符号 f*:1）全隐藏 = 用户说的"切掉上半部分"。
+   注意：cell key 形如 "f3:1||p1:0,p2:3"，正则里的 \d 在 JS 字符串里会被吃掉，
+   这里用 charAt 判断，避开转义坑。 */
+Q("cells.forEach(function(c){ var q=c.key.indexOf('||'); if(q>0 && c.key.charAt(q-1)==='1'){ c.sel=false; pickSel[c.key]=false; } }); buildCellVis(); cellsDirty=false;");
+check("上半部分 4 块已隐藏", JSON.parse(Q("JSON.stringify(cells.filter(function(c){return c.sel;}).length)")) === 4,
+  Q("cells.filter(function(c){return c.sel;}).length") + " 块保留");
+const uBake = JSON.parse(Q(`(function(){
+  var tris=cmBakeTriangles(), d=cmBakeData(), i, k, m={}, open=0, vol=0, capA=0;
+  function key3(p){ return Math.round(p[0]*1000)+","+Math.round(p[1]*1000)+","+Math.round(p[2]*1000); }
+  var nv={x:0,y:Math.cos(30*Math.PI/180),z:Math.sin(30*Math.PI/180)};
+  var dd=0; (function(){ dd = nv.x*0 + nv.y*6.51 + nv.z*(-8.977); })();
+  for(i=0;i<d.p.length;i+=9){
+    var v=[[d.p[i]+d.c[0],d.p[i+1]+d.c[1],d.p[i+2]+d.c[2]],
+           [d.p[i+3]+d.c[0],d.p[i+4]+d.c[1],d.p[i+5]+d.c[2]],
+           [d.p[i+6]+d.c[0],d.p[i+7]+d.c[1],d.p[i+8]+d.c[2]]];
+    for(k=0;k<3;k++){ var e=v[k], f=v[(k+1)%3];
+      var a=key3(e), b=key3(f); if(a===b) continue;
+      var ek=(a<b)?(a+"|"+b):(b+"|"+a); m[ek]=(m[ek]||0)+1; }
+    var ax=v[0][0],ay=v[0][1],az=v[0][2],bx=v[1][0],by=v[1][1],bz=v[1][2],cx=v[2][0],cy=v[2][1],cz=v[2][2];
+    vol += (ax*(by*cz-bz*cy) - ay*(bx*cz-bz*cx) + az*(bx*cy-by*cx))/6;
+    var s0=nv.x*ax+nv.y*ay+nv.z*az-dd, s1=nv.x*bx+nv.y*by+nv.z*bz-dd, s2=nv.x*cx+nv.y*cy+nv.z*cz-dd;
+    if(Math.abs(s0)<0.02 && Math.abs(s1)<0.02 && Math.abs(s2)<0.02){
+      var ux=bx-ax,uy=by-ay,uz=bz-az, vx=cx-ax,vy=cy-ay,vz=cz-az;
+      var nx=uy*vz-uz*vy, ny=uz*vx-ux*vz, nz=ux*vy-uy*vx;
+      capA += Math.sqrt(nx*nx+ny*ny+nz*nz)/2;
+    }
+  }
+  for(var kk in m) if(m[kk]===1) open++;
+  var gs={}; (d.g||[]).forEach(function(g){ gs[g]=(gs[g]||0)+1; });
+  return JSON.stringify({t:d.t, open:open, vol:Math.round(vol*10)/10, capArea:Math.round(capA*10)/10,
+    groups:Object.keys(gs).length, sizes:Object.keys(gs).map(function(g){return gs[g];}),
+    rawTris:tris.length, deg:tris.length-d.t,
+    bbox:[d.c[0],d.c[1],d.c[2]]});
+})()`));
+check("切掉的现场烘成两块闭合实体（每个长方体一块）",
+  uBake.groups === 2 && uBake.sizes.every(function(v){ return v === 20; }), JSON.stringify(uBake.sizes));
+check("烘出来没有开口边（以前 77 条开口边 = 侧面横线 + 悬空板缝）", uBake.open === 0, uBake.open + " 条");
+check("没有退化三角面（以前切面轮廓被丢成碎条）", uBake.deg === 0, uBake.deg + " 个");
+/* 解析体积：两长方体与"y*cos30+z*sin30 <= 1.1493"的交集
+   b1 11151.7 + b2 14694.4 = 25846.1 */
+check("保留下来的材料体积对得上解析值 25846.1",
+  Math.abs(uBake.vol - 25846.1) / 25846.1 < 0.005, uBake.vol + " (差 " +
+  (Math.round((uBake.vol - 25846.1) / 25846.1 * 10000) / 100) + "%)");
+/* 切面面积：b1 830.4 + b2 1212.1 = 2042.5 */
+check("切面面积对得上解析值 2042.5（不再内缩 0.2~0.5mm）",
+  Math.abs(uBake.capArea - 2042.5) / 2042.5 < 0.01, uBake.capArea + " mm²");
+/* 存盘 → 放置 → 棱线层：切口那一圈必须画出来（封闭实体靠"真棱"判定） */
+const uRec = JSON.parse(Q("JSON.stringify(cmSaveGeometry(cmBakeData(),'perm','用户现场','lab'))"));
+check("用户现场存盘带 2 个实体组", !!(uRec.geo.g && uRec.geo.g.filter(function(v,i,a){return a.indexOf(v)===i;}).length === 2),
+  uRec.geo.g ? "g=" + uRec.geo.g.length : "none");
+Q("cmClearPlaced(); cmPlace('" + uRec.id + "',[0,0,0]);");
+const uEdges = JSON.parse(Q(`(function(){
+  var m=placedCustom[0].mesh, ch=m.children||[], eg=null;
+  for(var i=0;i<ch.length;i++) if(ch[i].isLineSegments){ eg=ch[i]; break; }
+  if(!eg) return JSON.stringify({n:0});
+  var a=eg.geometry.attributes.position.array, onCut=0, pts=a.length/3;
+  /* 棱线是模型的**局部**坐标：判"落在切面上"要先把中心加回去 */
+  var c=${JSON.stringify(uRec.geo.c)};
+  var nv={y:Math.cos(30*Math.PI/180), z:Math.sin(30*Math.PI/180)}, dd=nv.y*6.51+nv.z*(-8.977);
+  for(var i=0;i<a.length;i+=3){
+    var s=nv.y*(a[i+1]+c[1])+nv.z*(a[i+2]+c[2])-dd;
+    if(Math.abs(s)<0.05) onCut++;
+  }
+  return JSON.stringify({pts:pts, onCut:onCut, c:c});
+})()`));
+check("放置后的模型画出了切口那一圈棱（封闭实体也要认得出真棱）",
+  uEdges.pts > 0 && uEdges.onCut >= 8, JSON.stringify(uEdges));
+
 console.log("\n结果: " + pass + " 通过, " + fail + " 失败");
 
 

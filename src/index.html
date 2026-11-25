@@ -4819,7 +4819,10 @@ function buildCylVis(skipCurves){
        才不画，这样"隐藏那一块"的视觉效果才成立。 */
     var bodyHidden = tinted && pickMode && cylRegionHidden(c);
     var col = !c.on ? 0x63707d : (tinted ? SOLID_TINT : CYL_COLOR);
-    var L = bodyLen(c), main = null, hs = cutHalf(c);
+    /* v33.79：记下"真正的实体本体网格"（端面圆环 / 棱线 / 轴线 / 相贯线都不是它）。
+       「存为自建」要把画面上看得见的实体烘成模型，以前只认主立体/分块，
+       拼装部件与相贯体实体从来没进过烘焙源（用户：拼装完点存为自建说没有实体）。 */
+    var L = bodyLen(c), main = null, hs = cutHalf(c), bodyMesh = null;
     // 变实：不透明、正常深度写入（看起来就是模型的一部分）；否则半透明青色
     var faceMat = new THREE.MeshLambertMaterial({
       color:col,
@@ -4878,6 +4881,7 @@ function buildCylVis(skipCurves){
       body.position.copy(P);
       if(bodyHidden) body.visible = false;
       g.add(body);
+      bodyMesh = body;
       // 两个端面圆环（管状，够粗）
       var tube = Math.max(0.4, c.r*0.03);
       [-1, 1].forEach(function(sgn){
@@ -4929,6 +4933,7 @@ function buildCylVis(skipCurves){
         if(bodyHidden) body9.visible = false;
         g.add(body9);
         main = body9;
+        bodyMesh = body9;
       }
     } else {
       // 实体长方体：(U, a, -V) 为局部坐标轴，尺寸 (2hw, L, 2hh)
@@ -4938,6 +4943,7 @@ function buildCylVis(skipCurves){
       box.position.copy(P);
       if(bodyHidden) box.visible = false;
       g.add(box);
+      bodyMesh = box;
       var eg = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(hs.hw*2, L, hs.hh*2)), edgeMat());
       eg.quaternion.copy(box.quaternion); eg.position.copy(P);
       eg.renderOrder = 999; eg.userData.ci = i; eg.userData.hlDecor = true;
@@ -4991,7 +4997,8 @@ function buildCylVis(skipCurves){
     if(bodyHidden){
       g.traverse(function(ch){ if(ch.userData && ch.userData.hlDecor) ch.visible = false; });
     }
-    cylVis.push({g:g, ring:main, curves:curves.length, body:true, hidden:!!bodyHidden});
+    cylVis.push({g:g, ring:main, curves:curves.length, body:true, hidden:!!bodyHidden,
+                 bodyMesh:bodyMesh});
   });
   setCylHighlightVisible(cylDecorVisible);   // 重建后保持当前开关状态
   /* 再压一次：隐藏材料的装饰不能因为上面这行又亮起来 */
@@ -8400,8 +8407,12 @@ function cmToast(msg, ms){ try{ snapTipText(msg, ms || 2400); }catch(e){ } }
 function cmR3(v){ return Math.round(v*100)/100; }   // 0.01mm 精度，存手机时体积减半
 /* 持久化只保留模型数据；距离场、空间索引等运行缓存不能进入存盘。 */
 function cmStorageRecord(r){
-  return {id:r.id,name:r.name,owner:r.owner,scope:r.scope,ts:r.ts,tris:r.tris,
+  var rec={id:r.id,name:r.name,owner:r.owner,scope:r.scope,ts:r.ts,tris:r.tris,
     autoKey:r.autoKey || undefined, geo:{p:r.geo.p,n:r.geo.n,c:r.geo.c}};
+  /* v33.79：拼接模型的实体分组（不写的话重叠处会变成 XOR 的洞） */
+  var G=cmSanitizeGroups(r.geo.g, Math.floor((r.geo.p && r.geo.p.length || 0)/9));
+  if(G) rec.geo.g=G;
+  return rec;
 }
 function cmLoad(){
   customModels = [];
@@ -8419,6 +8430,8 @@ function cmLoad(){
         clean.id=String(r.id||("cmLegacy"+customModels.length));
         clean.name=String(r.name||"自建模型").slice(0,24);
         clean.tris=r.geo.p.length/9;
+        var LEG=cmSanitizeGroups(r.geo.g, clean.tris);
+        if(LEG) clean.geo.g=LEG; else if(clean.geo) delete clean.geo.g;
         customModels.push(clean);
       }
     });
@@ -8543,6 +8556,242 @@ function cmClipTriangles(tris, planes){
   });
   return out;
 }
+/* ================= v33.80：点选模式 → 闭合实体烘焙 =================
+   用户反馈（截图 2 张）：实验室里两个长方体拼装（50×40×10 @原点 + 30×30×30 @左右40），
+   用侧垂面(30°, 高低6.51, 前后-8.977) 切掉上半部分，存为自建后：
+     · 切口附近"多出一片异常的面"；
+     · 重新打开后模型上"多一些异常的边线"（图上左侧面中间那条横线）。
+
+   根因不是封盖算法本身，而是**把屏幕上的分块网格当成模型存下来**：
+
+   ① 分块网格是被裁剪平面切开的**壳**，切口敞着；补上的是 cellCaps() 的封盖 ——
+      那是**给屏幕用的贴片**：沿法向朝"被切掉的一侧"平移 0.08mm（v33.16 躲 z-fighting），
+      多边形又是在平面网格上采样出来的（partSectionPoly2D 的 56/72 采样格），
+      比真实截面**内缩 0.2~0.5mm**。存进模型 → 一片悬空、偏小、与壳之间留一圈缝的薄板
+      = 用户看到的"多出的面"。
+   ② v33.71 的"体表面封盖"(userData.capBody)：每个体的**整张表面**再补一层
+      （内缩 0.06mm），只为在别的体被隐藏时挡住内壁。烘焙时也一起存 →
+      模型里每个体的表面都有两层 → 重新打开后 z-fighting + 一堆额外边线。
+   ③ 分块按**别的体的端面**剖开（长方体2 被长方体1 的上下端面切成三片 y=-5/0/5）。
+      屏幕上靠着色器逐片无缝拼合，但烘成三角汤之后每片都**各自开口**
+      → cmSolidEdges 把每段开口边都画成线 = 就是那条"横穿侧面的横线"
+      （实测 y=±5 两条剖切面上共 17 条开口边，总长 412mm）。
+
+   修法：点选模式不再烘分块网格，而是**按实体重建闭合实体**：
+     对每个（实体, 工程面侧位签名）取该实体的**整份闭合网格**，只用工程面裁剪
+     （别的体的端面只是屏幕上的剖分辅助，不属于材料边界），
+     再把裁剪产生的开口环在平面上**逐顶点重新封口**（顶点与壳完全重合）。
+   结果：水密实体 —— 无悬空面、无内缩、无重叠层、无多余开口边。
+   实测（用户这套参数，切掉 s>0 侧）：三角面 103 → 44，开口边 77 → 0，
+   有符号体积 25411 → 27145.6 mm³（= 解析值），剖面面积 1980.7 → 2042.5 mm²（= 解析值）。 */
+
+/* 按 tol 焊接顶点（27 邻域哈希），返回 {pts:[Vector3], idx:[[i,j,k],...]} */
+function cmWeldTris(tris, tol){
+  var pts=[], buckets={}, idx=[], inv=1/tol;
+  function find(p){
+    var qx=Math.round(p.x*inv), qy=Math.round(p.y*inv), qz=Math.round(p.z*inv);
+    var dx,dy,dz,j,lst,r,ex,ey,ez;
+    for(dx=-1;dx<=1;dx++) for(dy=-1;dy<=1;dy++) for(dz=-1;dz<=1;dz++){
+      lst=buckets[(qx+dx)+"|"+(qy+dy)+"|"+(qz+dz)];
+      if(!lst) continue;
+      for(j=0;j<lst.length;j++){
+        r=pts[lst[j]];
+        ex=r.x-p.x; ey=r.y-p.y; ez=r.z-p.z;
+        if(ex*ex+ey*ey+ez*ez<=tol*tol) return lst[j];
+      }
+    }
+    var id=pts.length; pts.push(p.clone());
+    var bk=qx+"|"+qy+"|"+qz;
+    if(!buckets[bk]) buckets[bk]=[];
+    buckets[bk].push(id);
+    return id;
+  }
+  tris.forEach(function(t){ idx.push([find(t[0].p),find(t[1].p),find(t[2].p)]); });
+  return {pts:pts, idx:idx};
+}
+/* 把平面上的一个开口环补成三角面（耳切；凸环等价于扇形）。
+   封盖外法向必须朝**被切掉的那一侧** = -pn（pn 是保留侧半空间 n·p-d>=0 的法向）。 */
+function cmCapLoop(pts, loop, pn, out){
+  var n=loop.length;
+  if(n<3) return;
+  var U=(Math.abs(pn.x)>0.9)?(new THREE.Vector3(0,1,0)):(new THREE.Vector3(1,0,0));
+  U.crossVectors(U,pn).normalize();
+  var V=new THREE.Vector3().crossVectors(pn,U).normalize();
+  var O=pts[loop[0]];
+  var P=[], j, a, b;
+  for(j=0;j<n;j++){
+    var q=pts[loop[j]].clone().sub(O);
+    P.push({ix:loop[j], u:q.dot(U), v:q.dot(V)});
+  }
+  var ar=0;
+  for(j=0;j<n;j++){ a=P[j]; b=P[(j+1)%n]; ar+=a.u*b.v-b.u*a.v; }
+  if(ar<0) P.reverse();
+  function cr(a,b,c){ return (b.u-a.u)*(c.v-a.v)-(b.v-a.v)*(c.u-a.u); }
+  function emit(t3){
+    var p0=pts[t3[0]], p1=pts[t3[1]], p2=pts[t3[2]];
+    var nr=new THREE.Vector3().subVectors(p1,p0).cross(new THREE.Vector3().subVectors(p2,p0));
+    if(nr.lengthSq()<1e-14) return;
+    if(nr.dot(pn)>0) out.push([{p:p0,n:null},{p:p2,n:null},{p:p1,n:null}]);
+    else             out.push([{p:p0,n:null},{p:p1,n:null},{p:p2,n:null}]);
+  }
+  /* ★ v33.80：凸环直接"从环心扇形三角化"。
+     耳切法对 60+ 边形的近似圆环会切出一串细长条：① 面积 <1e-6 的被 cmGeomData
+     当退化面丢掉（圆弧切面少掉几十片）；② 细条的第三点仍落在环上，离相邻侧面
+     只有零点几毫米 → cmSolidEdges 的折痕深度守卫（v33.76）把它判成"焊接噪声"，
+     于是**切口那一圈棱整圈画不出来**。环心作扇心后第三点离侧面有几十毫米，
+     切棱稳定可见，也不会有退化面。 */
+  var convex=true;
+  for(var c1=0;c1<P.length && convex;c1++){
+    var A1=P[(c1+P.length-1)%P.length], B1=P[c1], C1=P[(c1+1)%P.length];
+    if(cr(A1,B1,C1) <= 1e-9) convex=false;
+  }
+  if(convex && P.length>4){
+    var cu=0, cv=0;
+    P.forEach(function(q2){ cu+=q2.u; cv+=q2.v; });
+    cu/=P.length; cv/=P.length;
+    var cen=O.clone().add(U.clone().multiplyScalar(cu)).add(V.clone().multiplyScalar(cv));
+    pts.push(cen);
+    var ci=pts.length-1;
+    for(var j2=0;j2<P.length;j2++) emit([ci, P[j2].ix, P[(j2+1)%P.length].ix]);
+    return;
+  }
+  /* 非凸环：耳切，每次挑**面积最大**的合格耳（尽量少出细长条） */
+  var tri2=[], guard=0;
+  while(P.length>3 && guard++<400){
+    var best=-1, bestArea=1e-12;
+    for(var i=0;i<P.length;i++){
+      var A=P[(i+P.length-1)%P.length], B=P[i], C=P[(i+1)%P.length];
+      var ar3=cr(A,B,C);
+      if(ar3<=1e-10) continue;
+      var ok=true;
+      for(j=0;j<P.length;j++){
+        var Q=P[j];
+        if(Q===A || Q===B || Q===C) continue;
+        if(cr(A,B,Q)>=-1e-10 && cr(B,C,Q)>=-1e-10 && cr(C,A,Q)>=-1e-10){ ok=false; break; }
+      }
+      if(!ok) continue;
+      if(ar3>bestArea){ bestArea=ar3; best=i; }
+    }
+    if(best<0) break;
+    tri2.push([P[(best+P.length-1)%P.length].ix, P[best].ix, P[(best+1)%P.length].ix]);
+    P.splice(best,1);
+  }
+  if(P.length===3) tri2.push([P[0].ix,P[1].ix,P[2].ix]);
+  tri2.forEach(emit);
+}
+/* 把"被 planes 切开的三角汤"重新封成水密：找出落在裁剪平面上的开口环并补面。
+   只在**裁剪平面**上封口 —— 网格自带的开口（例如空心体的内孔）不动。 */
+function cmSealCut(tris, planes, tol){
+  var out=tris.slice();
+  if(!tris.length || !planes || !planes.length) return out;
+  var w=cmWeldTris(tris,tol), pts=w.pts, idx=w.idx;
+  var dir={}, i, k;
+  idx.forEach(function(a){
+    for(k=0;k<3;k++){
+      var u=a[k], v=a[(k+1)%3];
+      if(u===v) continue;
+      var e=u+"|"+v;
+      dir[e]=(dir[e]||0)+1;
+    }
+  });
+  var nxt={}, starts=[];
+  for(var e2 in dir){
+    var sp=e2.split("|"), u2=+sp[0], v2=+sp[1];
+    var f1=dir[e2], f2=dir[v2+"|"+u2]||0;
+    if(f1>f2){
+      if(!nxt[u2]){ nxt[u2]=[]; starts.push(u2); }
+      for(i=0;i<f1-f2;i++) nxt[u2].push(v2);
+    }
+  }
+  var loops=[], guard=0;
+  starts.forEach(function(s0){
+    var g2=0;
+    while(nxt[s0] && nxt[s0].length && g2++<32 && guard++<3000){
+      var loop=[s0], u=s0, ok=false, step=0;
+      while(step++<512){
+        var arr=nxt[u];
+        if(!arr || !arr.length) break;
+        var v=arr.pop();
+        if(v===s0){ ok=true; break; }
+        loop.push(v);
+        u=v;
+      }
+      if(ok && loop.length>=3) loops.push(loop);
+      else break;
+    }
+  });
+  loops.forEach(function(loop){
+    var pl=null, pj, j;
+    for(pj=0;pj<planes.length;pj++){
+      var good=true;
+      for(j=0;j<loop.length;j++){
+        if(Math.abs(planes[pj].distanceToPoint(pts[loop[j]]))>0.08){ good=false; break; }
+      }
+      if(good){ pl=planes[pj]; break; }
+    }
+    if(!pl) return;                       // 不在工程面上 → 不是切割造成的开口
+    cmCapLoop(pts, loop, pl.normal, out);
+  });
+  return out;
+}
+/* 工程面的半空间平面（与 rebuildCells 里 c.planes 的前 act.length 项同一套语义） */
+function cmPickFacePlanes(pk, act){
+  var planes=[];
+  for(var i=0;i<act.length;i++){
+    var o=act[i], bit=!!pk.fm[o.id];
+    planes.push(new THREE.Plane(bit?o.nv.clone():o.nv.clone().negate(), bit?-o.d:o.d));
+  }
+  return planes;
+}
+/* 某一块的"正面壳"网格（它的 geometry 就是该实体的整份世界坐标网格） */
+function cmPickShellMeshOf(key){
+  if(!cellGroup) return null;
+  for(var i=0;i<cellGroup.children.length;i++){
+    var m=cellGroup.children[i];
+    if(!m.isMesh || !m.userData || m.userData.ck!==key) continue;
+    if(m.userData.cap || m.userData.capBody) continue;
+    if(m.userData.front===false) continue;
+    return m;
+  }
+  return null;
+}
+/* 点选模式：把"保留下来的材料"重建成若干**闭合实体**，返回 [{tris, cells}]。
+   返回 null = 有贯穿体（圆柱/方孔）参与 → 交回旧的"分块网格 + 封盖"路线
+   （贯穿体的切口是着色器按圆柱丢弃的，平面裁剪 + 平面封口复现不了）。 */
+function cmPickBakeSolids(){
+  var act=activeFaceData();
+  var bodies={}, order=[], hasCyl=false;
+  cells.forEach(function(c){
+    if(!c || c.sel===false) return;
+    var pk=parseCellKey(c.key);
+    if(pk.cm && Object.keys(pk.cm).length){ hasCyl=true; return; }
+    var bk=(c.ownerPart!=null)?("p"+c.ownerPart)
+          :(c.ownerPe?("m"+((c.ownerPe._id!=null)?c.ownerPe._id:"0")):"main");
+    var b=bodies[bk];
+    if(!b){ b=bodies[bk]={bk:bk,sigs:{},order:[]}; order.push(b); }
+    var ids=Object.keys(pk.fm).sort(function(x,y){ return (+x)-(+y); });
+    var sig=ids.map(function(id){ return id+":"+(pk.fm[id]?1:0); }).join(",");
+    if(!b.sigs[sig]){ b.sigs[sig]={pk:pk,cells:[]}; b.order.push(sig); }
+    b.sigs[sig].cells.push(c);
+  });
+  if(hasCyl) return null;
+  var out=[];
+  order.forEach(function(b){
+    b.order.forEach(function(sig){
+      var S=b.sigs[sig], mesh=cmPickShellMeshOf(S.cells[0].key);
+      if(!mesh || !mesh.geometry) return;
+      var planes=cmPickFacePlanes(S.pk, act);
+      var tris=cmTriList(mesh.geometry);
+      if(!tris.length) return;
+      var M=mesh.matrixWorld;
+      if(M) tris.forEach(function(t){ t.forEach(function(v){ v.p.applyMatrix4(M); }); });
+      if(planes.length) tris=cmClipTriangles(tris, planes);
+      tris=cmSealCut(tris, planes, 1e-4);
+      if(tris.length) out.push({tris:tris, cells:S.cells});
+    });
+  });
+  return out;
+}
 function cmMixVert(a,b){ return {p:a.p.clone().add(b.p).multiplyScalar(0.5), n:null}; }
 function cmEmitTri(t, u, out, depth){
   if(!u){ out.push(t); return; }
@@ -8560,26 +8809,102 @@ function cmEmitTri(t, u, out, depth){
   }
   out.push(t);
 }
+/* 主立体几何是否可用（实验室是 0 顶点的占位体：coneF 有网格但没三角形） */
+function cmMainGeoUsable(){
+  var g = geo;
+  return !!(g && g.attributes && g.attributes.position && g.attributes.position.count > 0);
+}
+/* v33.79（用户：实验室里用模型拼装把多个实体拼在一起，没做任何面切割，
+   点左侧「存为自建」却提示"当前没有可保存的剩余实体"，于是无法自建模型）：
+   根因是旧烘焙源只认 主立体 / 点选分块 / 交集封盖 / 孔壁 ——
+   模型拼装部件（partGroup）与已放置的自建模型（customGroup）**从来没被收进来**，
+   而实验室的主立体是 0 顶点的占位体：`显示全部` 下 src 里只有一个空几何
+   → cmGeomData 返回 null → 弹"没有可保存的剩余实体"。
+   现在按"屏幕上真正画成实体的东西"补齐，任何拼装/拖动/放置的结果都能存。 */
+function cmBakeShellSources(){
+  var out=[], mainOK=cmMainGeoUsable(), i;
+  /* 模型拼装部件：实验室（没有主立体）里它们就是整页的模型；
+     其它卡里只有按了「拼装变实」才算实体材料，默认的半透明青蓝色只是
+     定位引导体（和相贯体的半透明引导一样），不写进模型。
+     点选模式里部件的身份本来就是"材料"（分块网格代表它，外壳会被隐藏，
+     这里自然收不到，不会重复烘）。 */
+  var wantParts = !mainOK || partTint || mode === "pick";
+  if(wantParts && partGroup){
+    partGroup.children.forEach(function(m){
+      if(!m.isMesh || m.visible === false) return;
+      if(!m.userData || m.userData.pi == null) return;   // 棱线(piEdge)/相贯线/标签都排除
+      out.push(m);
+    });
+  }
+  /* 已放置的自建模型：一直画成不透明实体 → 属于画面里的剩余实体。
+     半透明的才当引导体（拼装部件默认那一档），不写进模型。 */
+  for(i=0;i<placedCustom.length;i++){
+    var pe=placedCustom[i];
+    if(pe && pe.mesh && pe.mesh.visible !== false) out.push(pe.mesh);
+  }
+  /* 相贯体实体：只有「贯体变实」时它才被画成不透明实体（其余时候是半透明引导体）。
+     实验室没有主立体时，非孔相贯体本身就是用户拼出来的模型，直接收。 */
+  if(typeof cylVis !== "undefined" && cylVis){
+    for(i=0;i<cylVis.length;i++){
+      var v=cylVis[i], c=cyls[i];
+      if(!v || !v.bodyMesh || v.hidden) continue;
+      if(!c || !c.on || c.hole) continue;
+      if(v.bodyMesh.visible === false) continue;
+      if(!bodyTint && mainOK) continue;
+      out.push(v.bodyMesh);
+    }
+  }
+  return out;
+}
 function cmBakeSources(){
-  var src=[];
-  if(mode==="pick" && cellGroup){
+  return cmBakeSourceList().map(function(s){ return s.m; });
+}
+/* v33.79：烘焙源 + "每块实体"分组。
+   拼装出来的模型是**好几个闭合实体摆在一起**：放置后做点选/体素裁剪时，
+   体内判定必须"每块实体各自数射线奇偶、任意一块在体内即算材料（union）"。
+   旧实现把所有三角面混成一份、只数总奇偶 → 两块重叠的那部分被数成"外部"（XOR），
+   切出来就是一个洞（实测重叠区中心的 cmInsideBody=false / sdf=+1.4）。
+   所以这里给每个独立实体一个组号，cmGeomData 把组号随几何一起存进记录。 */
+/* v33.80：opt.skipCells = 点选分块已由 cmPickBakeSolids() 重建成闭合实体，
+   这里不要再把分块网格（壳+封盖+体表面补皮）收一遍；opt.startG 让新实体的组号接在后面。 */
+function cmBakeSourceList(opt){
+  var list=[];
+  var nextG=1;
+  if(opt && opt.startG) nextG=opt.startG;
+  var skipCells=!!(opt && opt.skipCells);
+  function main(m){ list.push({m:m, g:0}); }
+  function solid(m){ list.push({m:m, g:nextG++}); }
+  if(mode==="pick" && cellGroup && !skipCells){
+    var anyCellMesh=false;
     cellGroup.children.forEach(function(m){
+      if(m.isMesh) anyCellMesh=true;
       if(!m.isMesh || m.visible===false || !m.userData || m.userData.ck==null) return;
       if(m.userData.front===false) return;     // 深色背面壳：画的是同一块的内侧，不重复保存
       var c=null;
       for(var i=0;i<cells.length;i++) if(cells[i].key===m.userData.ck){ c=cells[i]; break; }
       if(c && c.sel===false) return;           // 用户点掉的部分不算"剩余实体"
-      src.push(m);
+      /* 点选分块是同一空间的互斥剖分 → 合在一组，总奇偶与并集一致 */
+      main(m);
     });
-    if(!cellGroup.children.length && coneF && coneF.visible) src.push(coneF);
+    if(!anyCellMesh && coneF && coneF.visible) main(coneF);
   } else {
-    if(coneF && coneF.visible) src.push(coneF);
-    if(interCapGroup) interCapGroup.children.forEach(function(m){ if(m.isMesh && m.visible!==false) src.push(m); });
+    if(coneF && coneF.visible) main(coneF);
+    if(interCapGroup) interCapGroup.children.forEach(function(m){ if(m.isMesh && m.visible!==false) main(m); });
   }
-  if(boreGroup) boreGroup.children.forEach(function(m){ if(m.isMesh && m.visible!==false) src.push(m); });
-  return src;
+  /* v33.79：拼装部件 / 已放置自建模型 / 变实的相贯体 —— 屏幕上画成实体就要能存下来。
+     它们彼此（以及和主立体）可能重叠，所以每块实体单独一组。 */
+  cmBakeShellSources().forEach(function(m){
+    var dup=false;
+    for(var i=0;i<list.length;i++) if(list[i].m===m){ dup=true; break; }
+    if(dup) return;
+    solid(m);
+  });
+  /* 孔壁是主立体材料边界的一部分（开口圆柱面），必须和主立体同一组 ——
+     单独一组的话，射线只穿过孔壁就会被数成"体内"，孔里那块反成实心。 */
+  if(boreGroup) boreGroup.children.forEach(function(m){ if(m.isMesh && m.visible!==false) main(m); });
+  return list;
 }
-function cmBakeTriangles(){
+function cmBakeTriangles(outGroups){
   /* v33.76：烘焙前先把"待重建"的分块补上。拖动面/贯穿体时 cellsDirty 会置位、
      真正的重建要等下一帧；用户恰好在这一瞬间点保存，烘到的就是**旧状态的切口**
      （用户反馈"模型在移动过程中会有异常的线，保存时正好有就一直存在"）。
@@ -8589,8 +8914,26 @@ function cmBakeTriangles(){
   }
   try{ scene.updateMatrixWorld(true); }catch(e){ }
   var all=[];
-  cmBakeSources().forEach(function(m){
-    var geo=m.geometry, mat=m.material;
+  var srcs, pickSolids=null, nextG=1;
+  /* v33.80：点选模式下先把"保留材料"重建成闭合实体（见 cmPickBakeSolids 注释）。
+     重建成功 → 不再收分块网格；返回 null（有贯穿体）→ 完全走旧路线。 */
+  if(mode==="pick" && cellGroup && cells.length){
+    try{ pickSolids=cmPickBakeSolids(); }catch(_){ pickSolids=null; }
+  }
+  if(pickSolids && pickSolids.length){
+    pickSolids.forEach(function(sol){
+      var g=nextG++;
+      for(var i2=0;i2<sol.tris.length;i2++){
+        all.push(sol.tris[i2]);
+        if(outGroups) outGroups[all.length-1]=g;
+      }
+    });
+    srcs=cmBakeSourceList({skipCells:true, startG:nextG});
+  } else {
+    srcs=cmBakeSourceList();
+  }
+  srcs.forEach(function(src){
+    var m=src.m, geo=m.geometry, mat=m.material;
     if(!geo || !geo.attributes || !geo.attributes.position) return;
     var tris=cmTriList(geo);
     if(!tris.length) return;
@@ -8599,9 +8942,17 @@ function cmBakeTriangles(){
     var planes=(mat && mat.clipIntersection!==true && mat.clippingPlanes && mat.clippingPlanes.length)?mat.clippingPlanes:null;
     tris=cmClipTriangles(tris, planes);
     var u=(mat && mat.userData) ? mat.userData.cylU : null;
+    var before=all.length;
     tris.forEach(function(t){ cmEmitTri(t,u,all,0); });
+    if(outGroups) for(var q=before;q<all.length;q++) outGroups[q]=src.g;
   });
   return all;
+}
+/* 烘焙 + 转成存盘格式（带实体分组）。按钮/公开接口都走这里。 */
+function cmBakeData(){
+  var gs=[];
+  var tris=cmBakeTriangles(gs);
+  return cmGeomData(tris, gs);
 }
 /* ---------- 法向重算 ----------
    v33.63：`cmTriList()` 烘出来的三角形 `n` 一律是 null，旧代码把它填成 (0,1,0)，
@@ -8753,11 +9104,22 @@ function cmWeldFlat(flat, tol, triN){
   }
   return flat;
 }
-function cmGeomData(tris){
+function cmGeomData(tris, groups){
   if(!tris || !tris.length) return null;
-  tris=cmDropDegenerate(tris);
-  var step=Math.max(1,Math.ceil(tris.length/CUSTOM_MAX_TRIS)), sel=[], i;
-  for(i=0;i<tris.length;i+=step) sel.push(tris[i]);
+  /* 退化三角形剔除（保留与 groups 的对齐）。全是退化的极端情形保持原样，别把模型清空。 */
+  var idxs=[], i;
+  for(i=0;i<tris.length;i++) if(cmTriArea2(tris[i]) > 1e-6) idxs.push(i);
+  if(!idxs.length){ for(i=0;i<tris.length;i++) idxs.push(i); }
+  var trisK=new Array(idxs.length), grpK=groups ? new Array(idxs.length) : null;
+  for(i=0;i<idxs.length;i++){
+    trisK[i]=tris[idxs[i]];
+    if(grpK) grpK[i]=groups[idxs[i]];
+  }
+  var step=Math.max(1,Math.ceil(trisK.length/CUSTOM_MAX_TRIS)), sel=[], selG=[];
+  for(i=0;i<trisK.length;i+=step){
+    sel.push(trisK[i]);
+    if(grpK) selG.push(grpK[i]);
+  }
   var flat=new Array(sel.length*9), nv=0;
   sel.forEach(function(t){
     t.forEach(function(v){ flat[nv++]=v.p.x; flat[nv++]=v.p.y; flat[nv++]=v.p.z; });
@@ -8780,7 +9142,34 @@ function cmGeomData(tris){
     p.push(cmR3(flat[i]-c[0]),cmR3(flat[i+1]-c[1]),cmR3(flat[i+2]-c[2]));
     n.push(cmR3(nrm[i]),cmR3(nrm[i+1]),cmR3(nrm[i+2]));
   }
-  return {p:p, n:n, t:sel.length, c:[cmR3(c[0]),cmR3(c[1]),cmR3(c[2])]};
+  var out={p:p, n:n, t:sel.length, c:[cmR3(c[0]),cmR3(c[1]),cmR3(c[2])]};
+  /* v33.79：多实体拼接 → 把"每块实体编号"一起存下来（见 cmBakeSourceList 注释）。
+     只有一块实体时不写，老记录/老格式逐字节不变。 */
+  if(selG){
+    var map={}, ng=0, gl=new Array(selG.length), full=true;
+    for(i=0;i<selG.length;i++){
+      var kk="g"+selG[i], vv=map[kk];
+      if(vv===undefined){
+        if(ng>=63){ full=false; break; }     // 极端多实体：退回"整体奇偶"，不写分组
+        vv=ng++; map[kk]=vv;
+      }
+      gl[i]=vv;
+    }
+    if(full && ng>1) out.g=gl;
+  }
+  return out;
+}
+/* 分组数组校验：长度与三角面一致、整数 0..63、至少两组才有意义（一组 = 不记录）。 */
+function cmSanitizeGroups(g, tris){
+  if(!g || !Array.isArray(g) || g.length !== tris || tris < 1) return null;
+  var ok=true, mx=0, i;
+  for(i=0;i<g.length;i++){
+    var v=g[i];
+    if(typeof v!=="number" || !isFinite(v) || v<0 || v>63 || Math.floor(v)!==v){ ok=false; break; }
+    if(v>mx) mx=v;
+  }
+  if(!ok || mx===0) return null;
+  return g.slice();
 }
 function cmGeomFromData(d){
   var g=new THREE.BufferGeometry();
@@ -8789,15 +9178,20 @@ function cmGeomFromData(d){
      重算一遍老模型也一起恢复正常明暗，不必让用户重存。 */
   var triCount=Math.floor(d.p.length/9);
   g.setAttribute("normal",new THREE.Float32BufferAttribute(cmNormalsFromPos(d.p, triCount),3));
+  /* v33.79：拼接模型的实体分组（体内判定按 union 而不是 XOR） */
+  var G=cmSanitizeGroups(d.g, triCount);
+  if(G) g.userData.cmGroups=G;
   g.computeBoundingBox(); g.computeBoundingSphere();
   return g;
 }
 function cmSaveGeometry(data, scope, name, owner){
-  if(!data || !data.t){ cmToast("当前没有可保存的剩余实体",2600); return null; }
+  if(!data || !data.t){ cmToast("当前没有可保存的实体（先拼装或切割出实体）",2800); return null; }
   var rec={ id:"cm"+Date.now()+"_"+Math.floor(Math.random()*1000),
             name:(name||("自建模型"+(customModels.length+1))).slice(0,24),
             owner:owner||cmOwner, scope:scope==="temp"?"temp":"perm",
             ts:Date.now(), tris:data.t, geo:{p:data.p,n:data.n,c:data.c} };
+  var SG=cmSanitizeGroups(data.g, data.t);
+  if(SG) rec.geo.g=SG;
   customModels.push(rec);
   var savedOK=true;
   if(rec.scope==="perm") savedOK=cmPersist();
@@ -8819,7 +9213,8 @@ function cmOpenDlg(data, owner){
   var nm=document.getElementById("cmName");
   if(nm){ nm.value="自建模型"+(customModels.length+1); }
   var info=document.getElementById("cmDlgInfo");
-  if(info) info.textContent="保存当前画面里剩余的实体"+(data&&data.t?("（"+data.t+" 个三角面）"):"")+
+  if(info) info.textContent="保存当前画面里显示为实体的模型（主立体 / 拼装部件 / 已放置的自建模型 / 变实的相贯体）"+
+    (data&&data.t?("，共 "+data.t+" 个三角面"):"")+
     "。暂时保存只在本页有效；永久保存会写进手机，下次进来还在。"+
     "存下来后在每一张功能卡的「相贯体 → 自建模型」里都能点名字放置。";
   dlg.hidden=false;
@@ -9015,7 +9410,15 @@ function cmSolidEdges(g, deg){
       for(var b2=a+1;b2<ts.length;b2++){
         var n1=triN[ts[a]], n2=triN[ts[b2]];
         if(!n1 || !n2) continue;
-        if(n1[0]*n2[0]+n1[1]*n2[1]+n1[2]*n2[2] <= cosLim && !isSeam(e,n1,n2)){
+        /* ★ v33.80：这里**不再**用 isSeam 过滤。
+           共边两片三角形的棱必然平行于 n1×n2（两条法向都垂直于这条棱），
+           isSeam 等于恒为真 —— 以前它只是靠着 `L>2.5` 才放过少数长棱，
+           于是"短于 2.5mm 的真棱整条不画"（切口圆弧段 2.0mm、小特征全丢）。
+           v33.79 之前看不出问题，是因为那时切面片是单独偏移补的，切口轮廓是
+           **开口边**（ts.length===1）走上面那条分支；v33.80 把切面封成水密之后，
+           切口轮廓变成真棱，就被 isSeam 全吃掉了（回归测试 C3 抓到的）。
+           真正的焊机噪声由下面的 creaseDepth 守卫负责，够用。 */
+        if(n1[0]*n2[0]+n1[1]*n2[1]+n1[2]*n2[2] <= cosLim){
           /* v33.76：折痕深度守卫——二面角过了阈值，深度却只有零点几毫米，
              这是焊接把共面片揉出的浅褶皱（老存盘数据里尤其多），不是真棱 */
           if(creaseDepth(e.ia, e.ib, ts[a], ts[b2]) < CREASE_MIN) continue;
@@ -9092,12 +9495,26 @@ function cmMaskOf(rec){
       var bi=ii*NB+kk; if(!bk[bi]) bk[bi]=[]; bk[bi].push(i);
     }
   }
-  var grid=new Uint8Array(N*N*N), ys=new Array(64);
+  var grid=new Uint8Array(N*N*N), ys=new Array(64), ysG=new Array(64);
+  /* v33.79：拼接模型的实体分组 → 逐组数奇偶、任意一组奇即体内（union）。 */
+  var GT=cmSanitizeGroups(rec.geo.g, n), NG=1, gidx=null;
+  if(GT){
+    var mxg2=0;
+    for(i=0;i<GT.length;i++) if(GT[i]>mxg2) mxg2=GT[i];
+    NG=mxg2+1; gidx=GT;
+  }
+  var P=new Uint8Array(NG>1?NG:1);
+  /* v33.79：每个采样列在 (x,z) 上带一点点**按列不同**的抖动（<0.1% 格）。
+     原因：中心对称的方体，底/顶面两个三角形沿 45° 对角线拼，对角线正好穿过
+     体素格点（长方体拼装件坐标又常落在整毫米/整格上）；射线打在公共对角线上时
+     两个三角形各算一次 → 同组奇偶被抵成 0，重叠区里就出现一条"整列判成体外"
+     的假沟。抖动后落点严格落在某一个三角形内部，边界归属确定。 */
+  var jx=sx*2.3e-4, jz=sz*1.7e-4;
   for(var ix=0; ix<N; ix++){
-    var x=lo[0]+sx*(ix+0.5);
+    var x=lo[0]+sx*(ix+0.5)+jx*(1+(ix%5));
     var bx0=Math.min(NB-1,Math.max(0,Math.floor((x-lo[0])/wx)));
     for(var iz=0; iz<N; iz++){
-      var z=lo[2]+sz*(iz+0.5);
+      var z=lo[2]+sz*(iz+0.5)-jz*(1+(iz%7));
       var lst=bk[bx0*NB+Math.min(NB-1,Math.max(0,Math.floor((z-lo[2])/wz)))];
       if(!lst || !lst.length) continue;
       var cnt=0;
@@ -9110,18 +9527,41 @@ function cmMaskOf(rec){
         var dx=x-ax, dz=z-az;
         var uu=(dx*e2z-dz*e2x)/den, vv=(e1x*dz-e1z*dx)/den;
         if(uu<-1e-7 || vv<-1e-7 || 1-uu-vv<-1e-7) continue;
-        ys[cnt++]=ay+uu*(p[o+4]-ay)+vv*(p[o+7]-ay);
+        ys[cnt]=ay+uu*(p[o+4]-ay)+vv*(p[o+7]-ay);
+        if(gidx) ysG[cnt]=gidx[lst[q]];
+        cnt++;
       }
       if(cnt<2) continue;
-      ys.length=cnt; ys.sort(function(a,b){ return a-b; });
-      /* 扫描线：y 从小到大，每越过一个三角面就翻转奇偶 —— 比"每格重数三角"快 N 倍 */
-      var iy0=Math.max(0,Math.floor((ys[0]-lo[1])/sy)), iy1=Math.min(N-1,Math.ceil((ys[cnt-1]-lo[1])/sy));
-      var ptr=0, parity=0;
-      for(var iy=iy0; iy<=iy1; iy++){
-        var yy=lo[1]+sy*(iy+0.5);
-        while(ptr<cnt && ys[ptr]<=yy){ ptr++; parity^=1; }
-        /* 从最低交点以下开始，parity=0（外）；跨过奇数个面后在体内 */
-        if(parity) grid[(iz*N+iy)*N+ix]=1;
+      ys.length=cnt;
+      if(!gidx){
+        ys.sort(function(a,b){ return a-b; });
+        /* 扫描线：y 从小到大，每越过一个三角面就翻转奇偶 —— 比"每格重数三角"快 N 倍 */
+        var iy0=Math.max(0,Math.floor((ys[0]-lo[1])/sy)), iy1=Math.min(N-1,Math.ceil((ys[cnt-1]-lo[1])/sy));
+        var ptr=0, parity=0;
+        for(var iy=iy0; iy<=iy1; iy++){
+          var yy=lo[1]+sy*(iy+0.5);
+          while(ptr<cnt && ys[ptr]<=yy){ ptr++; parity^=1; }
+          /* 从最低交点以下开始，parity=0（外）；跨过奇数个面后在体内 */
+          if(parity) grid[(iz*N+iy)*N+ix]=1;
+        }
+      } else {
+        /* 多实体：按 (y, 组号) 一起排序，逐组翻转奇偶 */
+        ysG.length=cnt;
+        for(var sa=1;sa<cnt;sa++){
+          var syv=ys[sa], sgv=ysG[sa], sb=sa-1;
+          while(sb>=0 && ys[sb]>syv){ ys[sb+1]=ys[sb]; ysG[sb+1]=ysG[sb]; sb--; }
+          ys[sb+1]=syv; ysG[sb+1]=sgv;
+        }
+        var iy0b=Math.max(0,Math.floor((ys[0]-lo[1])/sy)), iy1b=Math.min(N-1,Math.ceil((ys[cnt-1]-lo[1])/sy));
+        var ptrb=0;
+        for(var gi2=0;gi2<NG;gi2++) P[gi2]=0;
+        for(var iyb=iy0b; iyb<=iy1b; iyb++){
+          var yyb=lo[1]+sy*(iyb+0.5);
+          while(ptrb<cnt && ys[ptrb]<=yyb){ P[ysG[ptrb]]^=1; ptrb++; }
+          var insd=false;
+          for(var gq=0;gq<NG;gq++) if(P[gq]){ insd=true; break; }
+          if(insd) grid[(iz*N+iyb)*N+ix]=1;
+        }
       }
     }
   }
@@ -9357,12 +9797,26 @@ function cmBodyIndex(pe){
       lst.push(i);
     }
   }
+  /* v33.79：拼接模型的"每块实体"分组（几何上没有就按单组处理 = 老行为） */
+  var gsrc = (g.userData && g.userData.cmGroups) || null;
+  var grp=null, ng=1;
+  if(gsrc && gsrc.length===n){
+    var mxg=0;
+    for(i=0;i<n;i++){ var gv=gsrc[i]|0; if(gv>mxg) mxg=gv; }
+    if(mxg>0){
+      grp=new Uint8Array(n); ng=mxg+1;
+      for(i=0;i<n;i++) grp[i]=gsrc[i]|0;
+    }
+  }
   pe._idx = {geo:g, n:n, tris:tris, lo:[lox,loy,loz], hi:[hix,hiy,hiz],
-             nb:NB, wx:wx, wz:wz, bk:bk};
+             nb:NB, wx:wx, wz:wz, bk:bk, grp:grp, ng:ng};
   pe._ptsLocal = null;      // 换了几何 → 采样点重算
   return pe._idx;
 }
-/* 沿 +Y 数穿越次数：1 = 体内，0 = 体外，-1 = 恰好压在边/顶点上（结果不可信） */
+/* 沿 +Y 数穿越次数：1 = 体内，0 = 体外，-1 = 恰好压在边/顶点上（结果不可信）。
+   v33.79：有实体分组时**按组各数一份奇偶**，任意一组奇 = 体内（union）——
+   拼接模型的两块重叠时，总奇偶会互相抵消（XOR）把重叠区判成外部，切出来就是个洞。 */
+var _cmGrpCnt = new Uint16Array(64);
 function cmRayParity(idx, x, y, z){
   var lo=idx.lo, hi=idx.hi;
   if(x<lo[0] || x>hi[0] || z<lo[2] || z>hi[2] || y<lo[1] || y>hi[1]) return 0;
@@ -9372,7 +9826,9 @@ function cmRayParity(idx, x, y, z){
   var lst = idx.bk[ix*idx.nb+iz];
   if(!lst) return 0;
   var T=idx.tris, cnt=0, amb=false, e2=1e-9;
-  for(var q=0;q<lst.length;q++){
+  var grp=idx.grp, ng=grp ? idx.ng : 1, C=_cmGrpCnt, q;
+  if(grp) for(q=0;q<ng;q++) C[q]=0;
+  for(q=0;q<lst.length;q++){
     var o=lst[q]*9;
     var ax=T[o], ay=T[o+1], az=T[o+2];
     var bx=T[o+3], by=T[o+4], bz=T[o+5];
@@ -9386,9 +9842,13 @@ function cmRayParity(idx, x, y, z){
     if(uu < -e2 || vv < -e2 || (1-uu-vv) < -e2) continue;
     if(Math.abs(uu)<1e-7 || Math.abs(vv)<1e-7 || Math.abs(1-uu-vv)<1e-7) amb=true;
     var yh = ay + uu*(by-ay) + vv*(cy-ay);
-    if(yh > y) cnt++;
+    if(yh > y){ if(grp) C[grp[lst[q]]]++; else cnt++; }
   }
   if(amb) return -1;
+  if(grp){
+    for(q=0;q<ng;q++) if(C[q] & 1) return 1;
+    return 0;
+  }
   return (cnt & 1) ? 1 : 0;
 }
 function cmInsideBody(pe, p){
@@ -9778,9 +10238,11 @@ function cmExportJSON(id){
   var records=id==null ? customModels.slice() : customModels.filter(function(r){ return r.id===id; });
   if(!records.length) throw new Error("没有可导出的模型");
   var clean=records.map(function(r){
-    return {id:r.id,name:r.name,owner:r.owner,scope:r.scope,ts:r.ts,tris:r.tris,
-      geo:{p:Array.prototype.slice.call(r.geo.p),n:Array.prototype.slice.call(r.geo.n||[]),
-        c:Array.prototype.slice.call(r.geo.c||[0,0,0])}};
+    var geoClean={p:Array.prototype.slice.call(r.geo.p),n:Array.prototype.slice.call(r.geo.n||[]),
+        c:Array.prototype.slice.call(r.geo.c||[0,0,0])};
+    var G=cmSanitizeGroups(r.geo.g, Math.floor(r.geo.p.length/9));
+    if(G) geoClean.g=G;
+    return {id:r.id,name:r.name,owner:r.owner,scope:r.scope,ts:r.ts,tris:r.tris,geo:geoClean};
   });
   return JSON.stringify({format:"ConeLabCustom",version:1,models:clean});
 }
@@ -9836,8 +10298,18 @@ function cmParseImport(input){
     var pos=numbers(p,p.length,prefix+"顶点");
     var normal=numbers(r.geo.n,p.length,prefix+"法向");
     var center=numbers(r.geo.c,3,prefix+"中心");
+    var gv=null;
+    if(r.geo.g!==undefined){
+      if(!Array.isArray(r.geo.g) || r.geo.g.length!==tris) throw new Error(prefix+"实体分组数组长度与面数不一致");
+      for(var gi=0;gi<r.geo.g.length;gi++){
+        var gval=r.geo.g[gi];
+        if(typeof gval!=="number" || !Number.isFinite(gval) || gval<0 || gval>63 || Math.floor(gval)!==gval)
+          throw new Error(prefix+"实体分组须为 0 至 63 的整数");
+      }
+      gv=cmSanitizeGroups(r.geo.g, tris);
+    }
     return {name:r.name.trim(),owner:r.owner||"cone",scope:r.scope==="temp"?"temp":"perm",
-      ts:r.ts===undefined?Date.now():r.ts,tris:tris,geo:{p:pos,n:normal,c:center}};
+      ts:r.ts===undefined?Date.now():r.ts,tris:tris,geo:{p:pos,n:normal,c:center,g:gv||undefined}};
   });
   if(new Blob([JSON.stringify(clean)]).size>CM_JSON_MAX_BYTES) throw new Error("模型数据超过 8 MB 限制");
   return clean;
@@ -10038,8 +10510,8 @@ function cmInitUI(){
   });
   var save=document.getElementById("btnSaveCustom");
   if(save) save.addEventListener("click",function(){
-    var data=cmGeomData(cmBakeTriangles());
-    if(!data){ cmToast("当前没有可保存的剩余实体",2600); return; }
+    var data=cmBakeData();
+    if(!data){ cmToast("当前没有可保存的实体（先拼装或切割出实体）",2800); return; }
     cmOpenDlg(data,cmOwner);
   });
   var cancel=document.getElementById("cmCancel");
@@ -10108,6 +10580,8 @@ function cmAutoSave(data, key, owner){
   var rec={id:previous ? previous.id : "cm"+Date.now()+"_"+Math.random().toString(36).slice(2,7),
     name:previous ? previous.name : "建模台自动保存 "+new Date().toLocaleString("zh-CN"),
     owner:owner || "cad",scope:"perm",ts:Date.now(),tris:data.t,autoKey:key,geo:{p:data.p,n:data.n,c:data.c}};
+  var AG=cmSanitizeGroups(data.g, data.t);
+  if(AG) rec.geo.g=AG;
   if(idx<0) customModels.push(rec); else customModels[idx]=rec;
   if(!cmPersist()){
     if(idx<0) customModels.pop(); else customModels[idx]=previous;
@@ -10118,7 +10592,7 @@ function cmAutoSave(data, key, owner){
 }
 /* 测试 / 建模台用的公开接口 */
 window.ConeLabCustom = {
-  bake: function(){ return cmGeomData(cmBakeTriangles()); },
+  bake: function(){ return cmBakeData(); },
   geomData: function(geo, matrix){
     if(!geo) return null;
     var tris=cmTriList(geo);
@@ -10127,7 +10601,7 @@ window.ConeLabCustom = {
   },
   autoSave: cmAutoSave,
   save: function(data, scope, name, owner){ return cmSaveGeometry(data,scope,name,owner); },
-  saveVisible: function(scope,name){ return cmSaveGeometry(cmGeomData(cmBakeTriangles()),scope,name,cmOwner); },
+  saveVisible: function(scope,name){ return cmSaveGeometry(cmBakeData(),scope,name,cmOwner); },
   list: function(){ return customModels.map(function(r){ return {id:r.id,name:r.name,owner:r.owner,
       scope:r.scope,tris:r.tris,pLen:r.geo.p.length}; }); },
   place: cmPlace,
